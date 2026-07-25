@@ -1,4 +1,14 @@
-# Jarvis × Codex
+<p align="center">
+  <img src="src-tauri/icons/icon.png" width="160" alt="Jarvis Codex icon">
+</p>
+
+<h1 align="center">Jarvis × Codex</h1>
+
+<p align="center">
+  对电脑说“嗨 Jarvis”，直接进入 Codex Voice，让语音、代码和任务执行发生在同一个线程。
+</p>
+
+![Jarvis Codex 主界面](docs/images/jarvis-main-ui.png)
 
 一个 macOS 本地语音入口：说“嗨 Jarvis”后唤醒全息 GUI，并通过 Codex
 app-server V3 WebRTC 进入同一个 Codex Voice 线程。
@@ -10,6 +20,47 @@ Codex thread。
 > 当前状态：已在 macOS 26 Apple Silicon 实机验证唤醒、实时转写、语音回复和
 > Codex 任务执行。Codex realtime conversation 仍是实验性 app-server 能力，
 > 上游协议升级时可能需要同步适配。
+
+## 三分钟上手
+
+1. 在 Mac 上安装并登录 Codex App、ChatGPT App 或 Codex CLI。
+2. 打开 DMG，把 `Jarvis Codex` 拖入“应用程序”。
+3. 首次启动时允许麦克风和语音识别权限。
+4. 点击右上角“设置”，选择希望 Codex 工作的项目目录。
+5. 关闭窗口即可让 Jarvis 留在后台监听。
+6. 对电脑说“嗨 Jarvis”，窗口升起后直接说出任务。
+7. 说完可以继续追问；点击 `STOP` 可立即中断 Voice 和正在进行的任务。
+
+Voice 临时不可用时，可以在底部输入框发送文字任务。语音和文字会进入当前
+工作目录对应的同一个 Codex thread；切换工作目录时，Jarvis 会切换到该目录
+自己的任务上下文。
+
+## 使用场景
+
+### 边说边改代码
+
+> “嗨 Jarvis，检查这个项目为什么测试失败，找到原因并修复。”
+
+Jarvis 会把任务交给当前工作目录中的 Codex，执行检查、修改和验证，再通过
+Voice 回报结果。
+
+### 研究代码库
+
+> “嗨 Jarvis，先读一下这个仓库，告诉我认证流程从哪里进入。”
+
+适合阅读陌生项目、追踪调用链、解释模块关系和定位配置。
+
+### 审查与重构
+
+> “嗨 Jarvis，检查我刚才的修改有没有安全风险，不要直接提交。”
+
+适合代码审查、风险检查、补测试和小范围重构；高风险操作仍需要在界面确认。
+
+### 生成项目材料
+
+> “嗨 Jarvis，根据当前代码更新 README，再给我一份发布清单。”
+
+适合维护说明文档、架构文档、变更记录和交付材料。
 
 ## 功能
 
@@ -28,12 +79,15 @@ Codex thread。
 ## 系统要求
 
 - macOS 13 或更高版本
-- Node.js 20+
-- Rust stable
-- 已安装并登录 Codex CLI；GUI 应用从 Codex app-server 复用本机登录
+- 当前 DMG 面向 Apple Silicon
+- 已安装并登录 Codex App、ChatGPT App 或 Codex CLI
 - 麦克风和语音识别权限
 
+普通安装用户不需要 Node.js 或 Rust。它们只用于源码开发和构建。
+
 ## 本地开发
+
+开发环境需要 Node.js 20+ 和 Rust stable。
 
 ```bash
 npm ci
