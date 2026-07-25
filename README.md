@@ -5,21 +5,44 @@
 <h1 align="center">Jarvis × Codex</h1>
 
 <p align="center">
-  对电脑说“嗨 Jarvis”，直接进入 Codex Voice，让语音、代码和任务执行发生在同一个线程。
+  让 Codex 的全双工式语音办公，拥有“嗨 Jarvis”唤醒词和一套真正的本地工作界面。
 </p>
 
 ![Jarvis Codex 主界面](docs/images/jarvis-main-ui.png)
 
-一个 macOS 本地语音入口：说“嗨 Jarvis”后唤醒全息 GUI，并通过 Codex
-app-server V3 WebRTC 进入同一个 Codex Voice 线程。
+Codex Voice 已经不只是把语音转成一条文字提示：它支持自然轮流说话、回复中
+打断、连续追问，以及在任务执行期间继续检查进度和改变方向。Jarvis × Codex
+正是基于这套语音办公能力构建的 macOS 本地入口。
 
-它不模拟点击 Codex/ChatGPT 窗口、不绑定全局热键，也不创建第二套 GPT-Live
-会话。认证复用本机 Codex 登录；语音、文本、任务执行和工具事件属于同一个
-Codex thread。
+说“嗨 Jarvis”后，全息 GUI 自动升起，并通过 Codex app-server V3 WebRTC
+进入同一个 Codex Voice 线程。它不模拟点击 Codex/ChatGPT 窗口、不绑定全局
+热键，也不创建第二套 GPT-Live 会话。认证复用本机 Codex 登录；语音、文字、
+任务执行和工具事件属于同一个 Codex thread。
 
 > 当前状态：已在 macOS 26 Apple Silicon 实机验证唤醒、实时转写、语音回复和
 > Codex 任务执行。Codex realtime conversation 仍是实验性 app-server 能力，
 > 上游协议升级时可能需要同步适配。
+
+## 为什么是现在
+
+[官方 Voice 文档](https://learn.chatgpt.com/docs/features/voice)已经明确：
+Voice 可以在 Chat、Work 和 Codex 中协调任务。用户可以在回复过程中打断，
+继续追问；当 Codex 开始工作后，还可以继续通过语音检查进度或调整方向。
+
+Jarvis 没有重新制造一套语音模型，而是补上了 Codex Voice 原本缺少的本地入口：
+
+```text
+Codex 全双工式语音办公
+        ↓
+“嗨 Jarvis”本机唤醒
+        ↓
+全息 GUI + 当前工作目录
+        ↓
+同一个 Codex thread 持续对话并执行任务
+```
+
+这意味着你面对的不是一个只能回答问题的语音助手，而是一个可以边聊、边做、
+边汇报、边接受你纠正方向的 Codex 工作入口。
 
 ## 三分钟上手
 
@@ -36,6 +59,15 @@ Voice 临时不可用时，可以在底部输入框发送文字任务。语音�
 自己的任务上下文。
 
 ## 使用场景
+
+### 全双工式语音协作
+
+你不必等 Jarvis 说完再重新开始一轮。可以在回复中打断、补充条件、追问进度，
+或者在 Codex 工作时改变方向：
+
+> “先停一下，不要改接口，只修测试。”
+
+> “现在做到哪一步了？有阻塞就直接告诉我。”
 
 ### 边说边改代码
 
