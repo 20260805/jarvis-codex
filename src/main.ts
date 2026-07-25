@@ -24,6 +24,7 @@ type WakeEvent = {
   error?: string;
   cold?: boolean;
 };
+type PermissionMode = "safe" | "auto" | "full";
 
 const state = {
   mode: "booting" as Mode,
@@ -37,7 +38,18 @@ const state = {
 
 const WORKSPACE_KEY = "jarvis.workspace";
 const THREAD_KEY_PREFIX = "jarvis.threadId:";
+const PERMISSION_KEY = "jarvis.permissionMode";
+const permissionLabels: Record<PermissionMode, string> = {
+  safe: "安全模式 · 需要时确认",
+  auto: "自动办公 · 当前目录自主执行",
+  full: "完全访问 · 高风险",
+};
+function storedPermissionMode(): PermissionMode {
+  const value = localStorage.getItem(PERMISSION_KEY);
+  return value === "safe" || value === "full" ? value : "auto";
+}
 let workspace = "";
+let permissionMode = storedPermissionMode();
 const savedThreadId = () => localStorage.getItem(`${THREAD_KEY_PREFIX}${workspace}`);
 let peer: RTCPeerConnection | null = null;
 let microphoneStream: MediaStream | null = null;
@@ -94,7 +106,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
-  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
+  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -401,6 +413,7 @@ async function startDirectVoice({ coldStart = false } = {}) {
     const info = await invoke<DirectVoice>("start_codex_voice", {
       cwd: workspace,
       threadId: savedThreadId(),
+      permissionMode,
       sdp,
       voice: "cove",
     });
@@ -475,6 +488,7 @@ $("#command-form").addEventListener("submit", async (event) => {
     state.session = await invoke<Session>("start_jarvis", {
       cwd: workspace,
       threadId: savedThreadId(),
+      permissionMode,
     });
     localStorage.setItem(`${THREAD_KEY_PREFIX}${workspace}`, state.session.threadId);
     $("#thread-id").textContent = state.session.threadId;
@@ -497,14 +511,85 @@ $("#stop").addEventListener("click", async () => {
   await invoke("stop_all");
   await armWakeListener();
 });
-$("#settings").addEventListener("click", () => settings.showModal());
+function syncPermissionControls() {
+  const input = document.querySelector<HTMLInputElement>(
+    `input[name="permission-mode"][value="${permissionMode}"]`,
+  );
+  if (input) input.checked = true;
+  $("#permission-mode-label").textContent = permissionLabels[permissionMode];
+}
+
+$("#settings").addEventListener("click", () => {
+  syncPermissionControls();
+  settings.showModal();
+});
 $("#close-settings").addEventListener("click", () => settings.close());
-$("#save-settings").addEventListener("click", () => {
+$("#new-thread").addEventListener("click", async () => {
+  const button = $("#new-thread") as HTMLButtonElement;
+  button.disabled = true;
+  state.manualStop = true;
+  settings.close();
+  response.textContent = "正在结束当前任务并创建新的 Codex thread…";
+  try {
+    if (state.directVoice?.voiceActive || peer) {
+      try { await stopDirectVoice(); } catch { cleanupPeer(); }
+    }
+    try { await invoke("stop_all"); } catch { /* no active runtime */ }
+    await invoke("shutdown");
+    const freshSession = await invoke<Session>("start_jarvis", {
+      cwd: workspace,
+      threadId: null,
+      permissionMode,
+    });
+    state.session = freshSession;
+    state.directVoice = null;
+    localStorage.setItem(`${THREAD_KEY_PREFIX}${workspace}`, freshSession.threadId);
+    $("#thread-id").textContent = freshSession.threadId;
+    $("#workspace").textContent = freshSession.cwd;
+    userTranscriptBuffer = "";
+    assistantTranscriptBuffer = "";
+    agentMessageBuffer = "";
+    transcript.textContent = "“新开线程”";
+    response.textContent = "新的 Codex thread 已创建。下一次唤醒和文字任务都会进入这个线程。";
+    setMode("ready");
+    setWorker("orchestrator", "Fresh thread ready");
+  } catch (error) {
+    try { await invoke("shutdown"); } catch { /* already stopped */ }
+    state.session = null;
+    state.directVoice = null;
+    setMode("degraded");
+    response.textContent = `新建线程失败，原线程仍可续接：${String(error)}`;
+  } finally {
+    button.disabled = false;
+    await armWakeListener();
+  }
+});
+$("#save-settings").addEventListener("click", async () => {
   const nextWorkspace = ($("#workspace-setting") as HTMLInputElement).value.trim();
   if (!nextWorkspace) return;
+  const selectedPermission = document.querySelector<HTMLInputElement>(
+    'input[name="permission-mode"]:checked',
+  )?.value as PermissionMode | undefined;
+  const nextPermission = selectedPermission ?? permissionMode;
   if (nextWorkspace !== workspace) {
     localStorage.setItem(WORKSPACE_KEY, nextWorkspace);
     response.textContent = "工作目录已保存，重启 Jarvis 后生效。";
+  }
+  if (nextPermission !== permissionMode) {
+    state.manualStop = true;
+    if (state.directVoice?.voiceActive || peer) {
+      try { await stopDirectVoice(); } catch { cleanupPeer(); }
+    }
+    try { await invoke("stop_all"); } catch { /* no active runtime */ }
+    await invoke("shutdown");
+    permissionMode = nextPermission;
+    localStorage.setItem(PERMISSION_KEY, permissionMode);
+    state.session = null;
+    state.directVoice = null;
+    syncPermissionControls();
+    setMode("ready");
+    response.textContent = `权限已切换为“${permissionLabels[permissionMode]}”，下一次任务将续接当前 Codex thread。`;
+    await armWakeListener();
   }
   settings.close();
 });
@@ -519,6 +604,7 @@ try {
   $("#thread-id").textContent = "Not started";
   $("#workspace").textContent = workspace;
   ($("#workspace-setting") as HTMLInputElement).value = workspace;
+  syncPermissionControls();
   setWorker("orchestrator", "Wake word starting");
   setMode("ready");
   const backgroundStart = await invoke<boolean>("startup_is_background");

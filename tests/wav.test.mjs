@@ -64,3 +64,31 @@ test("production configuration persists workspace and resumes threads", () => {
   assert.match(backend, /validated_workspace/);
   assert.match(wakeHelper, /requiresOnDeviceRecognition = true/);
 });
+
+test("user can create a fresh Codex thread without deleting history", () => {
+  assert.match(frontend, /id="new-thread"/);
+  assert.match(frontend, /threadId:\s*null/);
+  assert.match(frontend, /invoke<Session>\("start_jarvis"/);
+  assert.match(frontend, /freshSession\.threadId/);
+  assert.match(frontend, /原线程仍保留在 Codex 历史记录中/);
+});
+
+test("permission profiles are persisted and mapped by the trusted backend", () => {
+  assert.match(frontend, /jarvis\.permissionMode/);
+  assert.match(frontend, /type PermissionMode = "safe" \| "auto" \| "full"/);
+  assert.match(frontend, /permissionMode,/);
+  assert.match(backend, /enum PermissionMode/);
+  assert.match(backend, /approval_policy: "on-request"/);
+  assert.match(backend, /approval_policy: "never"/);
+  assert.match(backend, /sandbox: "workspace-write"/);
+  assert.match(backend, /sandbox: "danger-full-access"/);
+  assert.match(backend, /existing\.permission_mode == permission_mode/);
+});
+
+test("wake activates the macOS app before focusing the Jarvis window", () => {
+  assert.match(backend, /fn raise_jarvis_window/);
+  assert.match(backend, /activateIgnoringOtherApps\(true\)/);
+  assert.match(backend, /set_always_on_top\(true\)/);
+  assert.match(backend, /set_always_on_top\(false\)/);
+  assert.match(backend, /raise_jarvis_window\(&app\)/);
+});

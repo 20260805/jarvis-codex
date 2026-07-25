@@ -8,6 +8,10 @@
   让 Codex 的全双工式语音办公，拥有“嗨 Jarvis”唤醒词和一套真正的本地工作界面。
 </p>
 
+<p align="center">
+  <a href="https://github.com/Big-Guan/jarvis-codex/releases/latest">下载最新版 DMG</a>
+</p>
+
 ![Jarvis Codex 主界面](docs/images/jarvis-main-ui.png)
 
 Codex Voice 已经不只是把语音转成一条文字提示：它支持自然轮流说话、回复中
@@ -105,8 +109,11 @@ Voice 回报结果。
 - STOP 终止 Voice、抑制 transcript tail，并中断晚到的 turn
 - 文本输入可加入当前 Voice thread
 - 工作目录可配置，每个目录持久化并续接自己的 Codex thread
-- 高风险 app-server 请求必须在 Jarvis 界面确认
+- 安全、自动办公和完全访问三档 Codex 权限，可在 Jarvis 设置中切换
+- 可随时“新开线程”：停止当前任务并创建新的 Codex thread，旧线程仍保留在 Codex 历史中
+- 自动办公默认限制在当前工作目录内，越界操作不弹窗并直接失败
 - 登录时后台启动，关闭窗口仅隐藏，继续监听唤醒词
+- 语音唤醒会激活 macOS 应用并把 Jarvis 窗口升到最前层
 
 ## 系统要求
 
@@ -144,7 +151,7 @@ npm run build
 输出：
 
 - `src-tauri/target/release/bundle/macos/Jarvis Codex.app`
-- `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.1.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.1.1_aarch64.dmg`
 
 构建脚本会生成并签名 `JarvisWakeListener.app`。该产物不进入 Git。
 
@@ -173,7 +180,8 @@ npm run build
 - 只有唤醒后，麦克风音频才进入 Codex Voice WebRTC 会话。
 - 不保存原始音频，不读取或写入登录凭据。
 - WebView 使用限制性 CSP，不加载第三方字体或脚本。
-- Codex thread 使用 `workspace-write` sandbox 和 `on-request` approval。
+- 默认使用“自动办公”：`workspace-write` sandbox 和 `never` approval；
+  “安全模式”保留交互审批，“完全访问”需要用户主动选择。
 - Siri 不参与主链路。
 
 架构和信任边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，安全问题报告方式

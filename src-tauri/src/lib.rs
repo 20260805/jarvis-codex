@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -89,6 +89,44 @@ struct CodexRuntime {
     voice_active: AtomicBool,
     voice_phase: RwLock<String>,
     realtime_session_id: RwLock<Option<String>>,
+    permission_mode: PermissionMode,
+    workspace: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum PermissionMode {
+    Safe,
+    Auto,
+    Full,
+}
+
+struct PermissionProfile {
+    approval_policy: &'static str,
+    sandbox: &'static str,
+    instructions: &'static str,
+}
+
+impl PermissionMode {
+    fn profile(self) -> PermissionProfile {
+        match self {
+            Self::Safe => PermissionProfile {
+                approval_policy: "on-request",
+                sandbox: "workspace-write",
+                instructions: "Require explicit confirmation when Codex requests approval for actions outside the workspace boundary or for risky operations.",
+            },
+            Self::Auto => PermissionProfile {
+                approval_policy: "never",
+                sandbox: "workspace-write",
+                instructions: "Work autonomously inside the selected workspace. Never request elevated access; if an action is blocked by the sandbox, explain the blocked boundary and continue with the safest in-workspace alternative.",
+            },
+            Self::Full => PermissionProfile {
+                approval_policy: "never",
+                sandbox: "danger-full-access",
+                instructions: "Full filesystem and network access is enabled. Still avoid destructive or irreversible actions unless the user explicitly requested the exact action and target.",
+            },
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -117,8 +155,42 @@ struct WakeStatus {
     authorization: String,
 }
 
+fn raise_jarvis_window(app: &AppHandle) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSApplication;
+
+            if let Some(mtm) = MainThreadMarker::new() {
+                let application = NSApplication::sharedApplication(mtm);
+                #[allow(deprecated)]
+                application.activateIgnoringOtherApps(true);
+            }
+        }
+
+        if let Some(window) = app_handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            // A short floating interval lets macOS finish switching the
+            // active application before the window returns to normal level.
+            let _ = window.set_always_on_top(true);
+            let _ = window.set_focus();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                let _ = window.set_always_on_top(false);
+            });
+        }
+    });
+}
+
 impl CodexRuntime {
-    async fn spawn(app: AppHandle) -> Result<Arc<Self>, String> {
+    async fn spawn(
+        app: AppHandle,
+        permission_mode: PermissionMode,
+        workspace: String,
+    ) -> Result<Arc<Self>, String> {
         let codex_binary = codex_binary_path(&app)?;
         let mut child = Command::new(&codex_binary)
             // Realtime is an experimental app-server surface. Enable it only
@@ -143,6 +215,8 @@ impl CodexRuntime {
             voice_active: AtomicBool::new(false),
             voice_phase: RwLock::new("standby".to_owned()),
             realtime_session_id: RwLock::new(None),
+            permission_mode,
+            workspace,
         });
 
         let weak = Arc::downgrade(&runtime);
@@ -466,11 +540,7 @@ fn start_wake_supervisor(app: AppHandle) {
                             woke = true;
                             state.wake_enabled.store(false, Ordering::SeqCst);
                             state.wake_ready.store(false, Ordering::SeqCst);
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
-                            }
+                            raise_jarvis_window(&app);
                         }
                         Some("error") => {
                             *state.wake_authorization.write().await = message
@@ -592,6 +662,7 @@ async fn consume_cold_wake(app: AppHandle, state: State<'_, AppState>) -> Result
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     tokio::time::sleep(Duration::from_millis(350)).await;
+    raise_jarvis_window(&app);
     let _ = app.emit("jarvis-wake", json!({"ok": true, "cold": true}));
     Ok(true)
 }
@@ -628,17 +699,36 @@ fn validated_workspace(cwd: &str) -> Result<String, String> {
         .map_err(|error| format!("无法读取工作目录：{error}"))
 }
 
+async fn terminate_runtime(state: &AppState) -> Result<(), String> {
+    if let Some(runtime) = state.runtime.lock().await.take() {
+        runtime
+            .child
+            .lock()
+            .await
+            .kill()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 async fn ensure_runtime(
     app: AppHandle,
     state: &State<'_, AppState>,
     cwd: &str,
     resume_thread_id: Option<&str>,
+    permission_mode: PermissionMode,
 ) -> Result<Arc<CodexRuntime>, String> {
-    if let Some(existing) = state.runtime.lock().await.clone() {
-        return Ok(existing);
-    }
     let cwd = validated_workspace(cwd)?;
-    let runtime = CodexRuntime::spawn(app).await?;
+    let existing = { state.runtime.lock().await.clone() };
+    if let Some(existing) = existing {
+        if existing.permission_mode == permission_mode && existing.workspace == cwd {
+            return Ok(existing);
+        }
+        terminate_runtime(state).await?;
+    }
+    let profile = permission_mode.profile();
+    let runtime = CodexRuntime::spawn(app, permission_mode, cwd.clone()).await?;
     runtime.request("initialize", json!({
         "clientInfo": {"name": "jarvis-codex", "title": "Jarvis Codex", "version": env!("CARGO_PKG_VERSION")},
         "capabilities": {"experimentalApi": true}
@@ -646,9 +736,12 @@ async fn ensure_runtime(
     runtime.notify("initialized", json!({})).await?;
     let thread_options = json!({
         "cwd": cwd,
-        "approvalPolicy": "on-request",
-        "sandbox": "workspace-write",
-        "baseInstructions": "You are Codex speaking through the local Jarvis interface. Keep voice replies concise and natural, execute real tasks with Codex tools when asked, report progress while work continues, accept spoken corrections in the same thread, and require explicit confirmation for risky or destructive actions."
+        "approvalPolicy": profile.approval_policy,
+        "sandbox": profile.sandbox,
+        "baseInstructions": format!(
+            "You are Codex speaking through the local Jarvis interface. Keep voice replies concise and natural, execute real tasks with Codex tools when asked, report progress while work continues, and accept spoken corrections in the same thread. {}",
+            profile.instructions
+        )
     });
     let started = if let Some(thread_id) = resume_thread_id.filter(|value| !value.trim().is_empty())
     {
@@ -683,8 +776,9 @@ async fn start_jarvis(
     state: State<'_, AppState>,
     cwd: String,
     thread_id: Option<String>,
+    permission_mode: PermissionMode,
 ) -> Result<SessionInfo, String> {
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref()).await?;
+    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
     let thread_id = runtime.thread().await?;
     Ok(SessionInfo { thread_id, cwd })
 }
@@ -695,13 +789,14 @@ async fn start_codex_voice(
     state: State<'_, AppState>,
     cwd: String,
     thread_id: Option<String>,
+    permission_mode: PermissionMode,
     sdp: String,
     voice: Option<String>,
 ) -> Result<DirectVoiceInfo, String> {
     if !sdp.starts_with("v=0") {
         return Err("WebRTC SDP offer 无效".to_owned());
     }
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref()).await?;
+    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
     let thread_id = runtime.thread().await?;
     if runtime.voice_active.load(Ordering::SeqCst) {
         let _ = runtime
@@ -852,16 +947,7 @@ async fn resolve_server_request(
 
 #[tauri::command]
 async fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(runtime) = state.runtime.lock().await.take() {
-        runtime
-            .child
-            .lock()
-            .await
-            .kill()
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    terminate_runtime(&state).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -909,7 +995,7 @@ pub fn run() {
                 if background_start {
                     let _ = window.hide();
                 } else {
-                    let _ = window.set_focus();
+                    raise_jarvis_window(app.handle());
                 }
             }
             if background_start {

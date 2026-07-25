@@ -33,6 +33,8 @@ input share this runtime.
 - Closing the window hides it; it does not terminate the listener.
 - A cold wake launches the app with `--jarvis-wake`.
 - Warm wake raises the existing window and starts Voice.
+- On macOS, wake explicitly activates `NSApplication`, briefly raises the
+  window level, focuses Jarvis, and then restores the normal window level.
 - STOP interrupts active turns, ends Voice and rearms the listener.
 
 ## Trust boundaries
@@ -40,7 +42,15 @@ input share this runtime.
 - The Swift helper receives microphone and speech-recognition access.
 - The Tauri host receives microphone access for Voice and owns Codex app-server.
 - The WebView can call only commands exposed through the Tauri capability file.
-- Destructive or privileged Codex requests remain subject to explicit approval.
+- Permission profiles are validated in Rust rather than accepting arbitrary
+  frontend sandbox strings:
+  - Safe: `workspace-write` + `on-request`
+  - Auto: `workspace-write` + `never`
+  - Full: `danger-full-access` + `never`
+- Changing permission mode rebuilds the Codex runtime while resuming the saved
+  workspace thread.
+- “New thread” stops the active Voice/turn, shuts down the old runtime, and
+  creates a fresh persistent thread without deleting the previous Codex history.
 - No API keys are embedded in the app.
 
 ## Upstream dependency
