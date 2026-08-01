@@ -64,27 +64,43 @@ let voiceStartInFlight = false;
 let recoverableColdStartError = false;
 const voiceAudio = new Audio();
 voiceAudio.autoplay = true;
-const currentWindow = getCurrentWindow();
-void currentWindow.onCloseRequested(async (event) => {
-  event.preventDefault();
-  await currentWindow.hide();
-});
+const previewParams = new URLSearchParams(window.location.search);
+const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__;
+const currentWindow = typeof tauriInternals?.invoke === "function" ? getCurrentWindow() : null;
+const previewModeValue = previewParams.get("preview");
+const previewActionValue = previewParams.get("action");
+const visualPreviewMode: Mode = ["booting", "ready", "voice-starting", "listening", "working", "speaking", "degraded", "stopped"].includes(previewModeValue ?? "")
+  ? previewModeValue as Mode
+  : "ready";
+if (!currentWindow) {
+  document.documentElement.classList.add("visual-preview");
+  if (previewParams.get("grid") === "1") document.documentElement.classList.add("transparency-grid");
+}
+if (currentWindow) {
+  void currentWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    await currentWindow.hide();
+  });
+}
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 <main class="shell" data-mode="booting">
-  <img class="visual-source" src="/assets/jarvis-avatar.png" alt="">
-  <div class="shade"></div><div class="scanlines"></div><div class="vignette"></div>
+  <canvas id="particle-field" width="1440" height="900" aria-hidden="true"></canvas>
   <header class="topbar hud-panel">
     <div class="brand"><i></i><strong>JARVIS</strong><span></span><em>CODEX VOICE SYSTEM</em></div>
     <div class="status"><i></i><b id="mode-label">INITIALIZING</b></div>
     <button id="settings" class="icon-button" aria-label="设置">⌘</button>
   </header>
   <section class="stage">
-    <div class="reticle outer"></div><div class="reticle inner"></div>
     <div class="avatar-window">
-      <div class="helmet-crop"></div>
-      <div class="eye eye-left"></div><div class="eye eye-right"></div>
-      <div class="voice-ring ring-one"></div><div class="voice-ring ring-two"></div>
+      <div class="character-aura"></div>
+      <div class="character-rig">
+        <div class="assembly-orbits" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="armor-shards" aria-hidden="true"></div>
+        <img id="jarvis-character" class="helmet-character" src="/assets/jarvis-character-v2.png" alt="Jarvis holographic helmet">
+        <div class="helmet-scan"></div>
+        <div class="assembly-flash" aria-hidden="true"></div>
+      </div>
       <canvas id="wave" width="900" height="120"></canvas>
     </div>
     <div class="identity"><span>JARVIS CORE</span><b id="identity-state">SYSTEM BOOT</b></div>
@@ -100,9 +116,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <b class="jarvis">JARVIS</b><p id="assistant-transcript">正在连接 Codex 原生任务线程…</p>
   </section>
   <footer class="controls">
-    <button id="mic" class="control mic"><span>🎙</span><b>CODEX VOICE</b><small>V3 WEBRTC · DIRECT</small></button>
+    <button id="mic" class="control mic"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8.25" y="3" width="7.5" height="11.5" rx="3.75"></rect><path d="M5.5 11.25v.75a6.5 6.5 0 0 0 13 0v-.75M12 18.5V22M8.75 22h6.5"></path></svg></span><b>CODEX VOICE</b><small>V3 WEBRTC · DIRECT</small></button>
     <form id="command-form" class="command"><input id="command-input" aria-label="文字指令" placeholder="Voice 不可用时，发送本地 Codex 文字任务…" autocomplete="off"><button>EXECUTE</button></form>
-    <button id="stop" class="control stop"><span>■</span><b>STOP</b><small>INTERRUPT ALL</small></button>
+    <button id="stop" class="control stop"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect class="stop-mark" x="6.5" y="6.5" width="11" height="11" rx="1.8"></rect></svg></span><b>STOP</b><small>INTERRUPT ALL</small></button>
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
@@ -110,13 +126,50 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
-const shell = $(".shell");
+const shell = $<HTMLElement>(".shell");
 const transcript = $("#user-transcript");
 const response = $("#assistant-transcript");
 const banner = $("#degraded-banner") as HTMLDivElement;
 const mic = $("#mic") as HTMLButtonElement;
 const approval = $("#approval") as HTMLDialogElement;
 const settings = $("#settings-dialog") as HTMLDialogElement;
+const characterRig = $<HTMLElement>(".character-rig");
+const hoverControls = $<HTMLElement>(".controls");
+const settingsButton = $<HTMLButtonElement>("#settings");
+let controlsHideTimer: number | undefined;
+let characterActionTimer: number | undefined;
+
+function revealControls() {
+  if (controlsHideTimer !== undefined) window.clearTimeout(controlsHideTimer);
+  shell.classList.add("controls-visible");
+}
+
+function scheduleControlsHide() {
+  if (controlsHideTimer !== undefined) window.clearTimeout(controlsHideTimer);
+  controlsHideTimer = window.setTimeout(() => shell.classList.remove("controls-visible"), 1500);
+}
+
+type CharacterAction = "acknowledge" | "approval" | "complete" | "error";
+
+function triggerCharacterAction(action: CharacterAction, duration = 1100) {
+  if (characterActionTimer !== undefined) window.clearTimeout(characterActionTimer);
+  for (const name of ["acknowledge", "approval", "complete", "error"] as const) {
+    shell.classList.remove(`action-${name}`);
+  }
+  void shell.clientWidth;
+  shell.classList.add(`action-${action}`);
+  characterActionTimer = window.setTimeout(() => shell.classList.remove(`action-${action}`), duration);
+}
+
+for (const area of [characterRig, hoverControls, settingsButton]) {
+  area.addEventListener("pointerenter", revealControls);
+  area.addEventListener("pointerleave", scheduleControlsHide);
+}
+shell.addEventListener("focusin", (event) => {
+  if (event.target instanceof Element && (hoverControls.contains(event.target) || settingsButton.contains(event.target))) revealControls();
+});
+shell.addEventListener("focusout", scheduleControlsHide);
+
 let approvalId: number | string | undefined;
 const copy: Record<Mode, [string, string]> = {
   booting: ["INITIALIZING", "SYSTEM BOOT"], ready: ["READY", "CODEX VOICE STANDBY"],
@@ -128,6 +181,12 @@ const copy: Record<Mode, [string, string]> = {
 function setMode(mode: Mode) {
   state.mode = mode; shell.setAttribute("data-mode", mode);
   $("#mode-label").textContent = copy[mode][0]; $("#identity-state").textContent = copy[mode][1];
+  if (mode === "voice-starting") {
+    shell.classList.remove("is-forming");
+    void shell.clientWidth;
+    shell.classList.add("is-forming");
+    startParticleFormation();
+  }
 }
 function setWorker(role: string, label: string, active = true) {
   const card = document.querySelector<HTMLElement>(`.worker[data-role="${role}"]`);
@@ -154,6 +213,245 @@ function drawWave() {
 }
 drawWave();
 
+type VisualParticle = {
+  fromX: number;
+  fromY: number;
+  targetX: number;
+  targetY: number;
+  size: number;
+  phase: number;
+  delay: number;
+  curve: number;
+  amber: boolean;
+};
+
+const particleCanvas = $("#particle-field") as HTMLCanvasElement;
+const particleContext = particleCanvas.getContext("2d")!;
+const characterImage = $("#jarvis-character") as HTMLImageElement;
+const armorShardLayer = $<HTMLElement>(".armor-shards");
+const armorShardSpecs = [
+  ["polygon(35% 4%,65% 4%,63% 23%,37% 23%)", 0, -390, -8, 80],
+  ["polygon(17% 9%,37% 4%,38% 31%,22% 35%)", -430, -280, -24, 0],
+  ["polygon(63% 4%,83% 9%,78% 35%,62% 31%)", 430, -280, 24, 20],
+  ["polygon(37% 22%,63% 22%,61% 45%,39% 45%)", 30, -320, 10, 170],
+  ["polygon(20% 31%,39% 27%,43% 48%,19% 49%)", -470, -120, -32, 100],
+  ["polygon(61% 27%,80% 31%,81% 49%,57% 48%)", 470, -120, 32, 120],
+  ["polygon(16% 45%,43% 44%,46% 57%,20% 59%)", -520, -20, -18, 220],
+  ["polygon(57% 44%,84% 45%,80% 59%,54% 57%)", 520, -20, 18, 240],
+  ["polygon(42% 43%,58% 43%,59% 70%,41% 70%)", 0, 390, -10, 300],
+  ["polygon(19% 56%,42% 54%,41% 73%,24% 78%)", -480, 180, -28, 280],
+  ["polygon(58% 54%,81% 56%,76% 78%,59% 73%)", 480, 180, 28, 300],
+  ["polygon(24% 73%,42% 68%,45% 84%,31% 88%)", -340, 330, 22, 390],
+  ["polygon(58% 68%,76% 73%,69% 88%,55% 84%)", 340, 330, -22, 410],
+  ["polygon(41% 68%,59% 68%,56% 88%,44% 88%)", 40, 430, 14, 470],
+  ["polygon(31% 85%,45% 82%,44% 96%,36% 94%)", -250, 460, -30, 500],
+  ["polygon(55% 82%,69% 85%,64% 94%,56% 96%)", 250, 460, 30, 520],
+  ["polygon(43% 86%,57% 86%,56% 98%,44% 98%)", 0, 520, -12, 560],
+  ["polygon(12% 25%,24% 19%,22% 45%,14% 52%)", -560, -210, -38, 180],
+  ["polygon(76% 19%,88% 25%,86% 52%,78% 45%)", 560, -210, 38, 200],
+] as const;
+
+for (const [clip, translateX, translateY, rotation, delay] of armorShardSpecs) {
+  const shard = document.createElement("i");
+  shard.className = "armor-shard";
+  shard.style.setProperty("--shard-clip", clip);
+  shard.style.setProperty("--shard-x", `${translateX}px`);
+  shard.style.setProperty("--shard-y", `${translateY}px`);
+  shard.style.setProperty("--shard-rotation", `${rotation}deg`);
+  shard.style.setProperty("--shard-delay", `${delay}ms`);
+  if (Math.abs(rotation) >= 28 || delay % 3 === 0) shard.classList.add("amber-edge");
+  armorShardLayer.append(shard);
+}
+
+let visualParticles: VisualParticle[] = [];
+let formationStartedAt = -10_000;
+let particleTargetBounds = { left: 0, top: 0, width: 1, height: 1 };
+const FORMATION_DURATION = 3200;
+
+function scatterParticleFromWindowEdge(particle: VisualParticle) {
+  const edge = Math.floor(Math.random() * 4);
+  const inset = Math.random() * 24;
+  if (edge === 0) {
+    particle.fromX = inset;
+    particle.fromY = Math.random() * particleCanvas.height;
+  } else if (edge === 1) {
+    particle.fromX = particleCanvas.width - inset;
+    particle.fromY = Math.random() * particleCanvas.height;
+  } else {
+    particle.fromX = Math.random() * particleCanvas.width;
+    particle.fromY = edge === 2 ? inset : particleCanvas.height - inset;
+  }
+}
+
+function syncParticleCanvasSize() {
+  const bounds = shell.getBoundingClientRect();
+  const width = Math.max(1, Math.round(bounds.width));
+  const height = Math.max(1, Math.round(bounds.height));
+  if (particleCanvas.width !== width) particleCanvas.width = width;
+  if (particleCanvas.height !== height) particleCanvas.height = height;
+}
+
+function prepareVisualParticles() {
+  if (!characterImage.naturalWidth) return;
+  syncParticleCanvasSize();
+  const sample = document.createElement("canvas");
+  sample.width = particleCanvas.width;
+  sample.height = particleCanvas.height;
+  const context = sample.getContext("2d", { willReadFrequently: true })!;
+  const shellBounds = shell.getBoundingClientRect();
+  const characterBounds = characterImage.getBoundingClientRect();
+  const left = characterBounds.left - shellBounds.left;
+  const top = characterBounds.top - shellBounds.top;
+  particleTargetBounds = { left, top, width: characterBounds.width, height: characterBounds.height };
+  context.drawImage(characterImage, left, top, characterBounds.width, characterBounds.height);
+  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+  visualParticles = [];
+  for (let y = 0; y < sample.height; y += 7) {
+    for (let x = 0; x < sample.width; x += 7) {
+      const alpha = pixels[(y * sample.width + x) * 4 + 3];
+      if (alpha < 46 || Math.random() > .82) continue;
+      const particle: VisualParticle = {
+        fromX: 0,
+        fromY: 0,
+        targetX: x + (Math.random() - .5) * 5,
+        targetY: y + (Math.random() - .5) * 5,
+        size: Math.random() > .965 ? 2.6 + Math.random() * 1.8 : .45 + Math.random() * 1.65,
+        phase: Math.random() * Math.PI * 2,
+        delay: Math.random() * .3,
+        curve: (Math.random() - .5) * (90 + Math.random() * 190),
+        amber: Math.random() < .16,
+      };
+      scatterParticleFromWindowEdge(particle);
+      visualParticles.push(particle);
+    }
+  }
+}
+
+function startParticleFormation() {
+  if (!visualParticles.length) prepareVisualParticles();
+  formationStartedAt = performance.now();
+  for (const particle of visualParticles) scatterParticleFromWindowEdge(particle);
+}
+
+function easeFormation(value: number) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function particlePosition(particle: VisualParticle, progress: number) {
+  const eased = easeFormation(progress);
+  const deltaX = particle.targetX - particle.fromX;
+  const deltaY = particle.targetY - particle.fromY;
+  const distance = Math.max(1, Math.hypot(deltaX, deltaY));
+  const bend = Math.sin(eased * Math.PI) * particle.curve;
+  return {
+    x: particle.fromX + deltaX * eased - deltaY / distance * bend,
+    y: particle.fromY + deltaY * eased + deltaX / distance * bend,
+  };
+}
+
+function drawFormationEnergy(now: number, rawProgress: number) {
+  if (rawProgress < 0 || rawProgress > 1.12) return;
+  const progress = Math.max(0, Math.min(1, rawProgress));
+  const centerX = particleTargetBounds.left + particleTargetBounds.width / 2;
+  const centerY = particleTargetBounds.top + particleTargetBounds.height / 2;
+  const intensity = Math.sin(progress * Math.PI);
+  const outerRadius = Math.max(particleCanvas.width, particleCanvas.height) * .56;
+  const targetRadius = Math.max(particleTargetBounds.width, particleTargetBounds.height) * .48;
+  const radius = outerRadius + (targetRadius - outerRadius) * easeFormation(progress);
+
+  particleContext.save();
+  particleContext.globalCompositeOperation = "lighter";
+  particleContext.translate(centerX, centerY);
+  particleContext.scale(1, .72);
+  for (let index = 0; index < 4; index += 1) {
+    const ringRadius = radius + index * 34;
+    particleContext.beginPath();
+    particleContext.setLineDash([16 + index * 5, 34 + index * 7]);
+    particleContext.lineDashOffset = (index % 2 ? 1 : -1) * now / (12 + index * 3);
+    particleContext.arc(0, 0, ringRadius, 0, Math.PI * 2);
+    particleContext.lineWidth = index === 0 ? 1.8 : .75;
+    particleContext.strokeStyle = index === 2
+      ? `rgba(255,155,47,${intensity * .48})`
+      : `rgba(34,199,255,${intensity * (.56 - index * .08)})`;
+    particleContext.stroke();
+  }
+  particleContext.restore();
+
+  const shock = Math.max(0, Math.min(1, (progress - .68) / .25));
+  if (shock > 0 && shock < 1) {
+    particleContext.save();
+    particleContext.globalCompositeOperation = "lighter";
+    particleContext.beginPath();
+    particleContext.ellipse(
+      centerX,
+      centerY,
+      targetRadius * (.65 + shock * 1.35),
+      targetRadius * (.48 + shock * .95),
+      0,
+      0,
+      Math.PI * 2,
+    );
+    particleContext.strokeStyle = `rgba(134,229,255,${(1 - shock) * .85})`;
+    particleContext.shadowColor = "#22c7ff";
+    particleContext.shadowBlur = 28;
+    particleContext.lineWidth = 2.4;
+    particleContext.stroke();
+    particleContext.restore();
+  }
+}
+
+function drawParticleField(now: number) {
+  particleContext.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
+  if (visualParticles.length) {
+    const rawProgress = (now - formationStartedAt) / FORMATION_DURATION;
+    const forming = rawProgress >= 0 && rawProgress < 1.08;
+    const idleStrength = state.mode === "speaking" ? .18 + state.level * .48 : state.mode === "working" ? .12 : .045;
+    particleContext.globalCompositeOperation = "lighter";
+    for (const particle of visualParticles) {
+      const localRaw = forming ? (rawProgress - particle.delay) / (1 - particle.delay) : 1;
+      const progress = Math.max(0, Math.min(1, localRaw));
+      const point = particlePosition(particle, progress);
+      const previous = particlePosition(particle, Math.max(0, progress - (.035 + particle.size * .008)));
+      const drift = forming ? 0 : Math.sin(now / 760 + particle.phase) * (1.1 + state.level * 3.2);
+      const x = point.x + drift;
+      const y = point.y + Math.cos(now / 830 + particle.phase) * (forming ? 0 : 1.4);
+      const alpha = forming
+        ? localRaw < 0
+          ? .12 + Math.sin(now / 180 + particle.phase) * .08
+          : .34 + Math.sin(progress * Math.PI) * .66
+        : idleStrength;
+      const color = state.mode === "working"
+        ? "255,155,47"
+        : state.mode === "stopped"
+          ? "255,73,62"
+          : particle.amber
+            ? "255,155,47"
+            : "34,199,255";
+      if (forming) {
+        particleContext.beginPath();
+        particleContext.moveTo(previous.x, previous.y);
+        particleContext.lineTo(x, y);
+        particleContext.strokeStyle = `rgba(${color},${alpha * (particle.size > 2.5 ? .62 : .28)})`;
+        particleContext.lineWidth = particle.size > 2.5 ? 1.5 : .65;
+        particleContext.stroke();
+      }
+      particleContext.beginPath();
+      particleContext.arc(x, y, particle.size * (forming ? 1.3 : 1), 0, Math.PI * 2);
+      particleContext.fillStyle = `rgba(${color},${alpha})`;
+      particleContext.fill();
+    }
+    if (forming) drawFormationEnergy(now, rawProgress);
+    particleContext.globalCompositeOperation = "source-over";
+  }
+  requestAnimationFrame(drawParticleField);
+}
+
+if (characterImage.complete && characterImage.naturalWidth) prepareVisualParticles();
+else characterImage.addEventListener("load", prepareVisualParticles, { once: true });
+new ResizeObserver(() => prepareVisualParticles()).observe(shell);
+requestAnimationFrame(drawParticleField);
+
 function analyserLevel(analyser: AnalyserNode | null) {
   if (!analyser) return 0;
   const samples = new Uint8Array(analyser.fftSize);
@@ -167,9 +465,25 @@ function analyserLevel(analyser: AnalyserNode | null) {
 }
 
 function updateAudioMeters() {
+  if (!currentWindow) {
+    const time = performance.now();
+    state.level = state.mode === "speaking"
+      ? .52 + Math.sin(time / 125) * .16
+      : state.mode === "working"
+        ? .2 + Math.sin(time / 310) * .08
+        : state.mode === "listening"
+          ? .08 + Math.sin(time / 430) * .035
+          : 0;
+    shell.style.setProperty("--voice-pulse", String(1 + state.level * .026));
+    shell.style.setProperty("--voice-glow", String(.45 + state.level * .55));
+    requestAnimationFrame(updateAudioMeters);
+    return;
+  }
   const micLevel = analyserLevel(microphoneAnalyser);
   const speakerLevel = analyserLevel(remoteAnalyser);
   state.level = Math.max(state.level, micLevel, speakerLevel);
+  shell.style.setProperty("--voice-pulse", String(1 + state.level * .026));
+  shell.style.setProperty("--voice-glow", String(.45 + state.level * .55));
   if (state.directVoice?.voiceActive && !state.agentWorking) {
     if (speakerLevel > 0.08 && state.mode !== "speaking") setMode("speaking");
     if (speakerLevel < 0.025 && state.mode === "speaking") setMode("listening");
@@ -193,6 +507,7 @@ function updateVoiceInfo(info: DirectVoice) {
 
 async function handle(message: Message) {
   if (message.id !== undefined && message.method) {
+    triggerCharacterAction("approval", 1800);
     approvalId = message.id; $("#approval-copy").textContent = `Codex 请求：${message.method}`; approval.showModal(); return;
   }
   const method = message.method, params = message.params;
@@ -201,6 +516,7 @@ async function handle(message: Message) {
     try {
       await peer.setRemoteDescription({ type: "answer", sdp: params.sdp });
     } catch (error) {
+      triggerCharacterAction("error");
       setMode("degraded");
       response.textContent = `Codex Voice SDP 连接失败：${String(error)}`;
     }
@@ -215,6 +531,7 @@ async function handle(message: Message) {
     });
     banner.hidden = true;
     setMode("listening");
+    triggerCharacterAction("acknowledge");
     setWorker("orchestrator", "Official Voice online");
     response.textContent = "Codex 官方 Voice 已上线。你现在可以直接和 Jarvis 对话。";
   } else if (method === "thread/realtime/transcript/delta") {
@@ -237,6 +554,7 @@ async function handle(message: Message) {
     } else {
       if (text) transcript.textContent = text;
       userTranscriptBuffer = "";
+      if (text) triggerCharacterAction("acknowledge");
     }
   } else if (method === "thread/realtime/itemAdded") {
     const itemType = String(params?.item?.type ?? "");
@@ -245,6 +563,7 @@ async function handle(message: Message) {
       setWorker("orchestrator", "Delegating to Codex");
     }
   } else if (method === "thread/realtime/error") {
+    triggerCharacterAction("error");
     setMode("degraded");
     banner.hidden = false;
     const detail = params?.message ?? "Codex Voice realtime error";
@@ -275,6 +594,7 @@ async function handle(message: Message) {
     if (agentMessageBuffer) response.textContent = agentMessageBuffer;
   } else if (method === "turn/completed") {
     state.agentWorking = false;
+    if (!state.manualStop) triggerCharacterAction("complete", 1400);
     setMode(state.manualStop ? "stopped" : state.directVoice?.voiceActive ? "listening" : "ready");
     setWorker("orchestrator", state.manualStop ? "Interrupted" : "Ready", !state.manualStop);
     for (const role of ["developer", "researcher", "reviewer"]) {
@@ -361,6 +681,11 @@ async function acquireMicrophone(coldStart: boolean) {
 }
 
 async function startDirectVoice({ coldStart = false } = {}) {
+  if (!currentWindow) {
+    setMode("voice-starting");
+    window.setTimeout(() => setMode("listening"), FORMATION_DURATION);
+    return;
+  }
   if (voiceStartInFlight || peer || state.directVoice?.voiceActive) return;
   voiceStartInFlight = true;
   state.manualStop = false;
@@ -440,45 +765,52 @@ async function stopDirectVoice() {
   }
 }
 
-await listen<Message>("codex-event", ({ payload }) => void handle(payload));
-await listen<WakeStatus>("jarvis-wake-status", ({ payload }) => {
-  state.wake = payload;
-  $("#wake-auth").textContent = payload.ready
-    ? "Local listener ready"
-    : payload.authorization === "authorized"
-      ? "Waiting to re-arm"
-      : payload.authorization;
-  if (payload.ready) {
-    if (recoverableColdStartError && state.mode === "degraded") {
-      recoverableColdStartError = false;
-      banner.hidden = true;
-      setMode("ready");
+if (currentWindow) {
+  await listen<Message>("codex-event", ({ payload }) => void handle(payload));
+  await listen<WakeStatus>("jarvis-wake-status", ({ payload }) => {
+    state.wake = payload;
+    $("#wake-auth").textContent = payload.ready
+      ? "Local listener ready"
+      : payload.authorization === "authorized"
+        ? "Waiting to re-arm"
+        : payload.authorization;
+    if (payload.ready) {
+      if (recoverableColdStartError && state.mode === "degraded") {
+        recoverableColdStartError = false;
+        banner.hidden = true;
+        setMode("ready");
+      }
+      if (state.mode === "ready") {
+        response.textContent = "我在。直接说“嗨 Jarvis”。";
+        setWorker("orchestrator", "Wake word armed");
+      }
     }
-    if (state.mode === "ready") {
-      response.textContent = "我在。直接说“嗨 Jarvis”。";
-      setWorker("orchestrator", "Wake word armed");
+  });
+  await listen<WakeEvent>("jarvis-wake", ({ payload }) => {
+    transcript.textContent = "“嗨，Jarvis”";
+    state.manualStop = false;
+    if (!payload.ok) {
+      setMode("degraded");
+      banner.hidden = false;
+      $("#degraded-copy").textContent = payload.error ?? "无法打开官方 Codex Voice。";
+      response.textContent = payload.error ?? "无法打开官方 Codex Voice。";
+      return;
     }
-  }
-});
-await listen<WakeEvent>("jarvis-wake", ({ payload }) => {
-  transcript.textContent = "“嗨，Jarvis”";
-  state.manualStop = false;
-  if (!payload.ok) {
-    setMode("degraded");
-    banner.hidden = false;
-    $("#degraded-copy").textContent = payload.error ?? "无法打开官方 Codex Voice。";
-    response.textContent = payload.error ?? "无法打开官方 Codex Voice。";
-    return;
-  }
-  banner.hidden = true;
-  void startDirectVoice({ coldStart: payload.cold === true });
-});
+    banner.hidden = true;
+    void startDirectVoice({ coldStart: payload.cold === true });
+  });
+}
 $("#command-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const input = $("#command-input") as HTMLInputElement, text = input.value.trim();
   if (!text) return;
   state.manualStop = false;
   transcript.textContent = text;
   input.value = "";
+  if (!currentWindow) {
+    response.textContent = "视觉预览：文字任务已切换为 Codex 工作态。";
+    setMode("working");
+    return;
+  }
   if (state.directVoice?.voiceActive) {
     response.textContent = "已将文字作为用户话语注入当前 Codex Voice 会话。";
     await invoke("append_codex_voice_text", { text });
@@ -502,9 +834,11 @@ mic.addEventListener("click", () => {
   else void startDirectVoice();
 });
 $("#stop").addEventListener("click", async () => {
+  triggerCharacterAction("error", 700);
   state.manualStop = true; setMode("stopped");
   state.agentWorking = false;
   for (const role of ["orchestrator", "developer", "researcher", "reviewer"]) setWorker(role, "Interrupted", false);
+  if (!currentWindow) return;
   if (state.directVoice?.voiceActive || peer) {
     try { await stopDirectVoice(); } catch { /* task interruption still continues */ }
   }
@@ -597,32 +931,59 @@ for (const [selector, approved] of [["#approve", true], ["#deny", false]] as con
   $(selector).addEventListener("click", async () => { await invoke("resolve_server_request", { requestId: approvalId, approved }); approval.close(); });
 }
 
-try {
-  workspace = localStorage.getItem(WORKSPACE_KEY)
-    ?? await invoke<string>("default_workspace");
-  localStorage.setItem(WORKSPACE_KEY, workspace);
-  $("#thread-id").textContent = "Not started";
+if (currentWindow) {
+  try {
+    workspace = localStorage.getItem(WORKSPACE_KEY)
+      ?? await invoke<string>("default_workspace");
+    localStorage.setItem(WORKSPACE_KEY, workspace);
+    $("#thread-id").textContent = "Not started";
+    $("#workspace").textContent = workspace;
+    ($("#workspace-setting") as HTMLInputElement).value = workspace;
+    syncPermissionControls();
+    setWorker("orchestrator", "Wake word starting");
+    setMode("ready");
+    const backgroundStart = await invoke<boolean>("startup_is_background");
+    if (!backgroundStart) {
+      const microphoneAuthorization = await invoke<string>("request_microphone_permission");
+      if (microphoneAuthorization !== "authorized") {
+        setMode("degraded");
+        banner.hidden = false;
+        $("#degraded-copy").textContent =
+          "请在系统设置 → 隐私与安全性 → 麦克风中允许 Jarvis Codex。";
+      }
+    }
+    await armWakeListener();
+    updateVoiceInfo(await invoke<DirectVoice>("direct_voice_status"));
+    if (await invoke<boolean>("consume_cold_wake")) {
+      transcript.textContent = "“嗨，Jarvis”";
+    }
+  } catch (error) { setMode("stopped"); response.textContent = `启动失败：${String(error)}`; }
+} else {
+  workspace = "Visual preview · native systems disconnected";
+  $("#thread-id").textContent = "Preview only";
   $("#workspace").textContent = workspace;
   ($("#workspace-setting") as HTMLInputElement).value = workspace;
-  syncPermissionControls();
-  setWorker("orchestrator", "Wake word starting");
-  setMode("ready");
-  const backgroundStart = await invoke<boolean>("startup_is_background");
-  if (!backgroundStart) {
-    const microphoneAuthorization = await invoke<string>("request_microphone_permission");
-    if (microphoneAuthorization !== "authorized") {
-      setMode("degraded");
-      banner.hidden = false;
-      $("#degraded-copy").textContent =
-        "请在系统设置 → 隐私与安全性 → 麦克风中允许 Jarvis Codex。";
-    }
+  $("#wake-auth").textContent = "Preview · not connected";
+  $("#voice-auth").textContent = "Preview · not connected";
+  transcript.textContent = visualPreviewMode === "stopped" ? "“停下”" : "“嗨，Jarvis”";
+  response.textContent = visualPreviewMode === "voice-starting"
+    ? "正在从粒子中重构 Jarvis 核心…"
+    : visualPreviewMode === "working"
+      ? "Codex 正在执行任务，装甲能量切换为工作态。"
+      : visualPreviewMode === "speaking"
+        ? "语音输出正在驱动角色光效与声波。"
+        : visualPreviewMode === "stopped"
+          ? "所有任务已中断，等待下一次唤醒。"
+          : "Jarvis 视觉系统预览就绪。";
+  setMode(visualPreviewMode);
+  if (["acknowledge", "approval", "complete", "error"].includes(previewActionValue ?? "")) {
+    window.setTimeout(() => triggerCharacterAction(previewActionValue as CharacterAction, 1800), 180);
   }
-  await armWakeListener();
-  updateVoiceInfo(await invoke<DirectVoice>("direct_voice_status"));
-  if (await invoke<boolean>("consume_cold_wake")) {
-    transcript.textContent = "“嗨，Jarvis”";
+  setWorker("orchestrator", visualPreviewMode === "working" ? "Codex working" : "Visual preview");
+  if (visualPreviewMode === "working") {
+    setWorker("developer", "Working");
   }
-} catch (error) { setMode("stopped"); response.textContent = `启动失败：${String(error)}`; }
+}
 
 async function armWakeListener() {
   try {
