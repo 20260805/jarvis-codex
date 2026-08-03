@@ -5,14 +5,29 @@
 <h1 align="center">Jarvis × Codex</h1>
 
 <p align="center">
-  让 Codex 的全双工式语音办公，拥有“嗨 Jarvis”唤醒词和一套真正的本地工作界面。
+  一声“嗨 Jarvis”，唤醒透明全息界面，直接通过 Codex Voice 对话并完成真实工作。
 </p>
 
 <p align="center">
   <a href="https://github.com/Big-Guan/jarvis-codex/releases/latest">下载最新版 DMG</a>
 </p>
 
-![Jarvis Codex 主界面](docs/images/jarvis-main-ui.png)
+![Jarvis Codex 功能界面](docs/images/jarvis-main-ui.png)
+
+> 上图展示 Jarvis × Codex 的功能结构。v0.2.0 已升级为头像主体透明界面；新的实机截图将在完成桌面取景后替换。
+
+## v0.2.0：透明粒子视觉版
+
+第二版保留原有 Voice、线程、权限与 STOP 主链路，只重构表现层：
+
+- 窗口背景完全透明，桌面上只保留 Jarvis 头像与必要状态光效
+- 每次唤醒时，粒子从窗口四周汇聚，并与装甲碎片、能量环共同组成头像
+- 麦克风、文字输入、STOP 和设置按钮默认隐藏，鼠标移入头像区域后才显示
+- 麦克风与 STOP 图标重新校正为几何居中
+- 根据确认、等待授权、任务完成和异常状态触发不同的角色动作与光效
+- Voice 音频电平继续驱动头像呼吸、扫描光和能量强度
+
+这些视觉变化不替换唤醒监听、Codex app-server WebRTC、工作目录线程续接、权限模式或任务中断逻辑。
 
 Codex Voice 已经不只是把语音转成一条文字提示：它支持自然轮流说话、回复中
 打断、连续追问，以及在任务执行期间继续检查进度和改变方向。Jarvis × Codex
@@ -56,7 +71,7 @@ Codex 全双工式语音办公
 4. 点击右上角“设置”，选择希望 Codex 工作的项目目录。
 5. 关闭窗口即可让 Jarvis 留在后台监听。
 6. 对电脑说“嗨 Jarvis”，窗口升起后直接说出任务。
-7. 说完可以继续追问；点击 `STOP` 可立即中断 Voice 和正在进行的任务。
+7. 将鼠标移到 Jarvis 头像上可显示控制按钮；点击 `STOP` 可立即中断 Voice 和正在进行的任务。
 
 Voice 临时不可用时，可以在底部输入框发送文字任务。语音和文字会进入当前
 工作目录对应的同一个 Codex thread；切换工作目录时，Jarvis 会切换到该目录
@@ -102,6 +117,9 @@ Voice 回报结果。
 
 - 本机唤醒词：嗨/嘿 Jarvis、Hi/Hey Jarvis、嗨/嘿贾维斯
 - Tauri 2 + Rust + TypeScript 全息桌面 GUI
+- 透明无边框头像界面与粒子/装甲聚合唤醒动画
+- 头像悬停显示控制区，待机时自动隐藏外围按钮
+- 确认、授权、完成和异常四类沟通动作反馈
 - 原生 AVFoundation 权限预检和 Hardened Runtime 音频 entitlement
 - WebRTC 麦克风输入、实时音频输出和字幕
 - `thread/realtime/start` V3 直连 Codex Voice
@@ -151,7 +169,7 @@ npm run build
 输出：
 
 - `src-tauri/target/release/bundle/macos/Jarvis Codex.app`
-- `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.1.1_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.2.0_aarch64.dmg`
 
 构建脚本会生成并签名 `JarvisWakeListener.app`。该产物不进入 Git。
 
