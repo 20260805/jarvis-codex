@@ -5,20 +5,26 @@
 <h1 align="center">Jarvis × Codex</h1>
 
 <p align="center">
-  一声“嗨 Jarvis”，唤醒透明全息界面，直接通过 Codex Voice 对话并完成真实工作。
+  一声“嗨 Jarvis”，让 Codex 从桌面醒来。
 </p>
 
 <p align="center">
   <a href="https://github.com/Big-Guan/jarvis-codex/releases/latest">下载最新版 DMG</a>
 </p>
 
-![Jarvis Codex 功能界面](docs/images/jarvis-main-ui.png)
+<p align="center">
+  <img src="public/assets/jarvis-character-v2.png" width="520" alt="Jarvis Codex transparent avatar">
+</p>
 
-> 上图展示 Jarvis × Codex 的功能结构。v0.2.0 已升级为头像主体透明界面；新的实机截图将在完成桌面取景后替换。
+Jarvis × Codex 是一个 macOS 本地语音工作入口。说出唤醒词后，透明窗口从桌面升起，
+粒子与装甲碎片聚合成 Jarvis；随后通过 Codex app-server WebRTC 进入同一个
+Codex Voice 线程。你可以自然对话、打断回复、继续追问，也可以让 Codex 在当前
+项目中真正执行任务。
 
 ## v0.2.0：透明粒子视觉版
 
-第二版保留原有 Voice、线程、权限与 STOP 主链路，只重构表现层：
+第二版让 Jarvis 成为整个页面的主体，同时保留原有 Voice、线程、权限与 STOP
+主链路：
 
 - 窗口背景完全透明，桌面上只保留 Jarvis 头像与必要状态光效
 - 每次唤醒时，粒子从窗口四周汇聚，并与装甲碎片、能量环共同组成头像
@@ -27,7 +33,8 @@
 - 根据确认、等待授权、任务完成和异常状态触发不同的角色动作与光效
 - Voice 音频电平继续驱动头像呼吸、扫描光和能量强度
 
-这些视觉变化不替换唤醒监听、Codex app-server WebRTC、工作目录线程续接、权限模式或任务中断逻辑。
+视觉层只消费现有音频电平、转写和任务状态事件，不替换唤醒监听、Codex
+app-server WebRTC、工作目录线程续接、权限模式或任务中断逻辑。
 
 Codex Voice 已经不只是把语音转成一条文字提示：它支持自然轮流说话、回复中
 打断、连续追问，以及在任务执行期间继续检查进度和改变方向。Jarvis × Codex
