@@ -31,5 +31,8 @@ jobs:
         with:
           components: clippy,rustfmt
       - run: npm ci
-      - run: npm run check
+      - if: runner.os == 'Windows'
+        run: npm run check
+      - if: runner.os == 'macOS'
+        run: npm run check:macos
       - run: npm run build
