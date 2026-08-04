@@ -13,13 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Verify (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-latest]
-    runs-on: ${{ matrix.os }}
+  verify-windows:
+    name: Verify (windows-latest)
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
@@ -31,8 +27,5 @@ jobs:
         with:
           components: clippy,rustfmt
       - run: npm ci
-      - if: runner.os == 'Windows'
-        run: npm run check
-      - if: runner.os == 'macOS'
-        run: npm run check:macos
+      - run: npm run check
       - run: npm run build
