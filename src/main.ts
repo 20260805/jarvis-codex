@@ -39,6 +39,7 @@ const state = {
 const WORKSPACE_KEY = "jarvis.workspace";
 const THREAD_KEY_PREFIX = "jarvis.threadId:";
 const PERMISSION_KEY = "jarvis.permissionMode";
+const CODEX_BINARY_KEY = "jarvis.codexBinary";
 const permissionLabels: Record<PermissionMode, string> = {
   safe: "安全模式 · 需要时确认",
   auto: "自动办公 · 当前目录自主执行",
@@ -50,6 +51,7 @@ function storedPermissionMode(): PermissionMode {
 }
 let workspace = "";
 let permissionMode = storedPermissionMode();
+let codexBinary = localStorage.getItem(CODEX_BINARY_KEY) ?? "";
 const savedThreadId = () => localStorage.getItem(`${THREAD_KEY_PREFIX}${workspace}`);
 let peer: RTCPeerConnection | null = null;
 let microphoneStream: MediaStream | null = null;
@@ -62,6 +64,12 @@ let assistantTranscriptBuffer = "";
 let agentMessageBuffer = "";
 let voiceStartInFlight = false;
 let recoverableColdStartError = false;
+let realtimeReconnectAttempts = 0;
+let realtimeReconnectTimer: number | null = null;
+let realtimeStableTimer: number | null = null;
+let pendingRealtimeReconnect = false;
+let lastRealtimeError = "";
+const MAX_REALTIME_RECONNECTS = 3;
 const voiceAudio = new Audio();
 voiceAudio.autoplay = true;
 const previewParams = new URLSearchParams(window.location.search);
@@ -122,7 +130,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
-  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
+  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><label class="workspace-setting">Codex 可执行文件（可选）<input id="codex-binary-setting" autocomplete="off" spellcheck="false" placeholder="自动查找，或填写 codex.exe 的完整路径"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限、工作目录或 Codex 路径切换会停止当前任务并重建运行时。</p><p>工作目录保存后立即生效；每个目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -521,6 +529,13 @@ async function handle(message: Message) {
       response.textContent = `Codex Voice SDP 连接失败：${String(error)}`;
     }
   } else if (method === "thread/realtime/started") {
+    pendingRealtimeReconnect = false;
+    lastRealtimeError = "";
+    if (realtimeStableTimer !== null) window.clearTimeout(realtimeStableTimer);
+    realtimeStableTimer = window.setTimeout(() => {
+      realtimeReconnectAttempts = 0;
+      realtimeStableTimer = null;
+    }, 90_000);
     updateVoiceInfo({
       codexConnected: true,
       voiceActive: true,
@@ -563,12 +578,22 @@ async function handle(message: Message) {
       setWorker("orchestrator", "Delegating to Codex");
     }
   } else if (method === "thread/realtime/error") {
+    const detail = String(params?.message ?? "Codex Voice realtime error");
+    lastRealtimeError = detail;
+    pendingRealtimeReconnect = !state.manualStop
+      && isRecoverableRealtimeError(detail)
+      && realtimeReconnectAttempts < MAX_REALTIME_RECONNECTS;
+    if (realtimeStableTimer !== null) {
+      window.clearTimeout(realtimeStableTimer);
+      realtimeStableTimer = null;
+    }
     triggerCharacterAction("error");
-    setMode("degraded");
-    banner.hidden = false;
-    const detail = params?.message ?? "Codex Voice realtime error";
+    setMode(pendingRealtimeReconnect ? "voice-starting" : "degraded");
+    banner.hidden = pendingRealtimeReconnect;
     $("#degraded-copy").textContent = detail;
-    response.textContent = detail;
+    response.textContent = pendingRealtimeReconnect
+      ? "Voice 网络连接中断，正在准备自动恢复…"
+      : detail;
   } else if (method === "thread/realtime/closed") {
     cleanupPeer();
     updateVoiceInfo({
@@ -578,9 +603,18 @@ async function handle(message: Message) {
       protocol: "Codex app-server V3 · WebRTC",
       threadId: params?.threadId ?? state.session?.threadId,
     });
+    if (pendingRealtimeReconnect && !state.manualStop) {
+      pendingRealtimeReconnect = false;
+      scheduleRealtimeReconnect(lastRealtimeError);
+      return;
+    }
     if (!state.manualStop) {
-      setMode("ready");
-      response.textContent = "Codex Voice 已结束。再次说“嗨 Jarvis”即可唤醒。";
+      const failed = Boolean(lastRealtimeError);
+      setMode(failed ? "degraded" : "ready");
+      banner.hidden = !failed;
+      response.textContent = failed
+        ? lastRealtimeError
+        : "Codex Voice 已结束。再次说“嗨 Jarvis”即可唤醒。";
       await armWakeListener();
     }
   } else if (method === "turn/started") {
@@ -654,6 +688,53 @@ function cleanupPeer() {
 const sleep = (milliseconds: number) =>
   new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
+function isRecoverableRealtimeError(error: unknown) {
+  const detail = String(error).toLowerCase();
+  return [
+    "connection reset",
+    "peer closed connection",
+    "failed to read websocket",
+    "failed to connect realtime websocket",
+    "without closing handshake",
+    "os error 10060",
+    "timed out",
+  ].some((fragment) => detail.includes(fragment));
+}
+
+function cancelRealtimeReconnect(resetAttempts = true) {
+  pendingRealtimeReconnect = false;
+  lastRealtimeError = "";
+  if (realtimeReconnectTimer !== null) {
+    window.clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+  if (realtimeStableTimer !== null) {
+    window.clearTimeout(realtimeStableTimer);
+    realtimeStableTimer = null;
+  }
+  if (resetAttempts) realtimeReconnectAttempts = 0;
+}
+
+function scheduleRealtimeReconnect(detail: string) {
+  if (state.manualStop || realtimeReconnectAttempts >= MAX_REALTIME_RECONNECTS) {
+    setMode("degraded");
+    banner.hidden = false;
+    $("#degraded-copy").textContent = detail;
+    response.textContent = `${detail}（自动恢复次数已用完，请检查 VPN/代理后重新唤醒。）`;
+    void armWakeListener();
+    return;
+  }
+  realtimeReconnectAttempts += 1;
+  const delay = 800 * (2 ** (realtimeReconnectAttempts - 1));
+  setMode("voice-starting");
+  banner.hidden = true;
+  response.textContent = `Voice 网络瞬断，${delay / 1000} 秒后自动恢复（${realtimeReconnectAttempts}/${MAX_REALTIME_RECONNECTS}）…`;
+  realtimeReconnectTimer = window.setTimeout(() => {
+    realtimeReconnectTimer = null;
+    if (!state.manualStop) void startDirectVoice({ reconnect: true });
+  }, delay);
+}
+
 function isNotAllowedError(error: unknown) {
   return error instanceof DOMException
     ? error.name === "NotAllowedError"
@@ -680,13 +761,16 @@ async function acquireMicrophone(coldStart: boolean) {
   throw new Error("麦克风初始化失败");
 }
 
-async function startDirectVoice({ coldStart = false } = {}) {
+async function startDirectVoice(
+  { coldStart = false, reconnect = false }: { coldStart?: boolean; reconnect?: boolean } = {},
+) {
   if (!currentWindow) {
     setMode("voice-starting");
     window.setTimeout(() => setMode("listening"), FORMATION_DURATION);
     return;
   }
   if (voiceStartInFlight || peer || state.directVoice?.voiceActive) return;
+  if (!reconnect) cancelRealtimeReconnect();
   voiceStartInFlight = true;
   state.manualStop = false;
   recoverableColdStartError = false;
@@ -736,21 +820,29 @@ async function startDirectVoice({ coldStart = false } = {}) {
     if (!sdp) throw new Error("WebRTC 未生成 SDP offer");
 
     const info = await invoke<DirectVoice>("start_codex_voice", {
-      cwd: workspace,
-      threadId: savedThreadId(),
-      permissionMode,
-      sdp,
-      voice: "cove",
+      request: {
+        cwd: workspace,
+        threadId: savedThreadId(),
+        permissionMode,
+        codexPath: codexBinary || null,
+        sdp,
+        voice: "cove",
+      },
     });
     updateVoiceInfo(info);
   } catch (error) {
     cleanupPeer();
     recoverableColdStartError = coldStart && isNotAllowedError(error);
-    setMode("degraded");
-    banner.hidden = false;
-    $("#degraded-copy").textContent = String(error);
-    response.textContent = String(error);
-    await armWakeListener();
+    const detail = String(error);
+    if (reconnect && isRecoverableRealtimeError(detail)) {
+      scheduleRealtimeReconnect(detail);
+    } else {
+      setMode("degraded");
+      banner.hidden = false;
+      $("#degraded-copy").textContent = detail;
+      response.textContent = detail;
+      await armWakeListener();
+    }
   } finally {
     voiceStartInFlight = false;
   }
@@ -821,6 +913,7 @@ $("#command-form").addEventListener("submit", async (event) => {
       cwd: workspace,
       threadId: savedThreadId(),
       permissionMode,
+      codexPath: codexBinary || null,
     });
     localStorage.setItem(`${THREAD_KEY_PREFIX}${workspace}`, state.session.threadId);
     $("#thread-id").textContent = state.session.threadId;
@@ -854,6 +947,7 @@ function syncPermissionControls() {
 }
 
 $("#settings").addEventListener("click", () => {
+  ($("#codex-binary-setting") as HTMLInputElement).value = codexBinary;
   syncPermissionControls();
   settings.showModal();
 });
@@ -874,6 +968,7 @@ $("#new-thread").addEventListener("click", async () => {
       cwd: workspace,
       threadId: null,
       permissionMode,
+      codexPath: codexBinary || null,
     });
     state.session = freshSession;
     state.directVoice = null;
@@ -899,17 +994,31 @@ $("#new-thread").addEventListener("click", async () => {
   }
 });
 $("#save-settings").addEventListener("click", async () => {
-  const nextWorkspace = ($("#workspace-setting") as HTMLInputElement).value.trim();
-  if (!nextWorkspace) return;
+  const requestedWorkspace = ($("#workspace-setting") as HTMLInputElement).value.trim();
+  if (!requestedWorkspace) return;
+  let nextWorkspace: string;
+  try {
+    nextWorkspace = await invoke<string>("validate_workspace", { cwd: requestedWorkspace });
+  } catch (error) {
+    response.textContent = `工作目录无效：${String(error)}`;
+    return;
+  }
   const selectedPermission = document.querySelector<HTMLInputElement>(
     'input[name="permission-mode"]:checked',
   )?.value as PermissionMode | undefined;
   const nextPermission = selectedPermission ?? permissionMode;
-  if (nextWorkspace !== workspace) {
+  const nextCodexBinary = ($("#codex-binary-setting") as HTMLInputElement).value.trim();
+  const workspaceChanged = nextWorkspace !== workspace;
+  const runtimeChanged = workspaceChanged
+    || nextPermission !== permissionMode
+    || nextCodexBinary !== codexBinary;
+  if (workspaceChanged) {
     localStorage.setItem(WORKSPACE_KEY, nextWorkspace);
-    response.textContent = "工作目录已保存，重启 Jarvis 后生效。";
+    workspace = nextWorkspace;
+    $("#workspace").textContent = workspace;
+    $("#thread-id").textContent = savedThreadId() ?? "Not started";
   }
-  if (nextPermission !== permissionMode) {
+  if (runtimeChanged) {
     state.manualStop = true;
     if (state.directVoice?.voiceActive || peer) {
       try { await stopDirectVoice(); } catch { cleanupPeer(); }
@@ -918,11 +1027,14 @@ $("#save-settings").addEventListener("click", async () => {
     await invoke("shutdown");
     permissionMode = nextPermission;
     localStorage.setItem(PERMISSION_KEY, permissionMode);
+    codexBinary = nextCodexBinary;
+    if (codexBinary) localStorage.setItem(CODEX_BINARY_KEY, codexBinary);
+    else localStorage.removeItem(CODEX_BINARY_KEY);
     state.session = null;
     state.directVoice = null;
     syncPermissionControls();
     setMode("ready");
-    response.textContent = `权限已切换为“${permissionLabels[permissionMode]}”，下一次任务将续接当前 Codex thread。`;
+    response.textContent = `运行设置已保存（${permissionLabels[permissionMode]}），下一次任务将在所选目录续接 Codex thread。`;
     await armWakeListener();
   }
   settings.close();
@@ -939,6 +1051,7 @@ if (currentWindow) {
     $("#thread-id").textContent = "Not started";
     $("#workspace").textContent = workspace;
     ($("#workspace-setting") as HTMLInputElement).value = workspace;
+    ($("#codex-binary-setting") as HTMLInputElement).value = codexBinary;
     syncPermissionControls();
     setWorker("orchestrator", "Wake word starting");
     setMode("ready");
@@ -963,6 +1076,7 @@ if (currentWindow) {
   $("#thread-id").textContent = "Preview only";
   $("#workspace").textContent = workspace;
   ($("#workspace-setting") as HTMLInputElement).value = workspace;
+  ($("#codex-binary-setting") as HTMLInputElement).value = codexBinary;
   $("#wake-auth").textContent = "Preview · not connected";
   $("#voice-auth").textContent = "Preview · not connected";
   transcript.textContent = visualPreviewMode === "stopped" ? "“停下”" : "“嗨，Jarvis”";

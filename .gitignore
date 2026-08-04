@@ -1,8 +1,10 @@
 node_modules/
 dist/
+/.codex-publish-work-*/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/wake-helper/JarvisWakeListener.app/
+src-tauri/wake-helper/JarvisWakeListener.exe
 runtime/*
 !runtime/.gitkeep
 .DS_Store

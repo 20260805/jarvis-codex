@@ -9,14 +9,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Big-Guan/jarvis-codex/releases/latest">下载最新版 DMG</a>
+  <a href="docs/WINDOWS.md">Windows 安装与部署指南</a>
+  ·
+  <a href="docs/WINDOWS_TROUBLESHOOTING.md">常见问题排查</a>
 </p>
 
 <p align="center">
   <img src="public/assets/jarvis-character-v2.png" width="520" alt="Jarvis Codex transparent avatar">
 </p>
 
-Jarvis × Codex 是一个 macOS 本地语音工作入口。说出唤醒词后，透明窗口从桌面升起，
+Jarvis × Codex 是一个 macOS / Windows 本地语音工作入口。说出唤醒词后，透明窗口从桌面升起，
 粒子与装甲碎片聚合成 Jarvis；随后通过 Codex app-server WebRTC 进入同一个
 Codex Voice 线程。你可以自然对话、打断回复、继续追问，也可以让 Codex 在当前
 项目中真正执行任务。
@@ -65,6 +67,50 @@ Codex Voice 已经不只是把语音转成一条文字提示：它支持自然�
 > 当前状态：已在 macOS 26 Apple Silicon 实机验证唤醒、实时转写、语音回复和
 > Codex 任务执行。Codex realtime conversation 仍是实验性 app-server 能力，
 > 上游协议升级时可能需要同步适配。
+>
+> Windows 11 x64 移植已接入本机唤醒 sidecar、Codex 路径选择、精确子进程停止、
+> 双平台 CI 与 NSIS 配置；Voice 和中英文唤醒仍需按 [Windows 验证文档](docs/WINDOWS.md)
+> 在真实设备上验收，未执行的实机项目不视为通过。
+
+## Windows 快速部署
+
+本仓库当前提供源码构建流程。普通使用者最终只需要安装构建好的 NSIS 安装包；
+从源码构建安装包的电脑需要准备以下环境：
+
+- Windows 11 x64
+- Node.js 20 或更高版本
+- Rust stable（MSVC toolchain）
+- Visual Studio 2022 Build Tools，并安装“使用 C++ 的桌面开发”和 Windows SDK
+- Microsoft Edge WebView2 Runtime
+- 已安装并登录的 Codex，且 `codex.exe` 支持 app-server realtime conversation
+- 中文或英文 Windows 语音识别语言包，以及桌面应用麦克风权限
+
+项目不需要单独填写 OpenAI API Key；认证复用本机已有的 Codex 登录。第一次部署建议
+先完整阅读 [Windows 11 开发与验证](docs/WINDOWS.md)，再在 PowerShell 中执行：
+
+```powershell
+git clone https://github.com/Jong12346/CODEX-Jarvis-win.git
+cd CODEX-Jarvis-win
+npm ci
+npm run check
+npm run dev
+```
+
+确认开发模式可以启动后，生成 Windows 安装包：
+
+```powershell
+npm run build:windows
+```
+
+安装包输出到：
+
+```text
+src-tauri\target\release\bundle\nsis\Jarvis Codex_0.2.0_x64-setup.exe
+```
+
+若出现 `cargo`、MSVC、Codex 路径、WebView2、语音语言包、麦克风权限、网络代理或
+未签名安装包问题，请按 [Windows 常见问题排查](docs/WINDOWS_TROUBLESHOOTING.md)
+逐项检查。
 
 ## 为什么是现在
 
@@ -87,7 +133,7 @@ Codex 全双工式语音办公
 这意味着你面对的不是一个只能回答问题的语音助手，而是一个可以边聊、边做、
 边汇报、边接受你纠正方向的 Codex 工作入口。
 
-## 三分钟上手
+## macOS 三分钟上手
 
 1. 在 Mac 上安装并登录 Codex App、ChatGPT App 或 Codex CLI。
 2. 打开 DMG，把 `Jarvis Codex` 拖入“应用程序”。
@@ -159,8 +205,7 @@ Voice 回报结果。
 
 ## 系统要求
 
-- macOS 13 或更高版本
-- 当前 DMG 面向 Apple Silicon
+- macOS 13 或更高版本（当前 DMG 面向 Apple Silicon），或 Windows 11 x64
 - 已安装并登录 Codex App、ChatGPT App 或 Codex CLI
 - 麦克风和语音识别权限
 
@@ -184,6 +229,9 @@ JARVIS_WORKSPACE=/absolute/path npm run dev
 
 也可以在 Jarvis 设置面板保存工作目录；重启后生效。
 
+Windows 用户请查看 [Windows 11 开发、构建与实机验证](docs/WINDOWS.md)。项目可直接
+用 VS Code 打开；Windows 安装包使用 NSIS。
+
 ## 构建
 
 ```bash
@@ -194,6 +242,7 @@ npm run build
 
 - `src-tauri/target/release/bundle/macos/Jarvis Codex.app`
 - `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.2.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/nsis/Jarvis Codex_0.2.0_x64-setup.exe`（Windows）
 
 构建脚本会生成并签名 `JarvisWakeListener.app`。该产物不进入 Git。
 
@@ -228,3 +277,9 @@ npm run build
 
 架构和信任边界见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，安全问题报告方式
 见 [SECURITY.md](SECURITY.md)。
+
+## 上游与许可
+
+本仓库基于 [Big-Guan/jarvis-codex](https://github.com/Big-Guan/jarvis-codex)
+进行 Windows 适配，并保留上游 Git 历史和作者信息。仓库当前未包含许可证文件；
+复制、修改、发布安装包或商业使用前，请先确认上游授权。本仓库不会擅自添加许可证。

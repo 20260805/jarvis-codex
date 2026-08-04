@@ -91,6 +91,7 @@ struct CodexRuntime {
     realtime_session_id: RwLock<Option<String>>,
     permission_mode: PermissionMode,
     workspace: String,
+    codex_binary: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -147,6 +148,17 @@ struct DirectVoiceInfo {
     realtime_session_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartCodexVoiceRequest {
+    cwd: String,
+    thread_id: Option<String>,
+    permission_mode: PermissionMode,
+    codex_path: Option<String>,
+    sdp: String,
+    voice: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WakeStatus {
@@ -190,16 +202,20 @@ impl CodexRuntime {
         app: AppHandle,
         permission_mode: PermissionMode,
         workspace: String,
+        codex_binary: PathBuf,
     ) -> Result<Arc<Self>, String> {
-        let codex_binary = codex_binary_path(&app)?;
-        let mut child = Command::new(&codex_binary)
+        let mut command = Command::new(&codex_binary);
+        command
             // Realtime is an experimental app-server surface. Enable it only
             // for this isolated Jarvis child; never mutate ~/.codex/config.toml.
             .args(["app-server", "--enable", "realtime_conversation", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        #[cfg(target_os = "windows")]
+        apply_windows_proxy(&mut command);
+        let mut child = command
             .spawn()
             .map_err(|error| format!("无法启动 codex app-server：{error}"))?;
         let writer = child.stdin.take().ok_or("无法连接 Codex stdin")?;
@@ -217,6 +233,7 @@ impl CodexRuntime {
             realtime_session_id: RwLock::new(None),
             permission_mode,
             workspace,
+            codex_binary,
         });
 
         let weak = Arc::downgrade(&runtime);
@@ -340,35 +357,177 @@ impl CodexRuntime {
     }
 }
 
-fn codex_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn codex_binary_path(app: &AppHandle, selected: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(selected) = selected.filter(|value| !value.trim().is_empty()) {
+        let path = PathBuf::from(selected.trim());
+        if !codex_executable_usable(&path) {
+            return Err(
+                "The selected Codex executable does not exist or cannot be started".to_owned(),
+            );
+        }
+        #[cfg(target_os = "windows")]
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+        {
+            return Err("Select the native codex.exe file, not a .cmd or .bat wrapper".to_owned());
+        }
+        return path
+            .canonicalize()
+            .map_err(|error| format!("Cannot read the selected Codex executable: {error}"));
+    }
     if let Ok(configured) = std::env::var("JARVIS_CODEX_BIN") {
         let path = PathBuf::from(configured);
-        if path.is_file() {
+        if codex_executable_usable(&path) {
             return Ok(path);
         }
+        return Err("JARVIS_CODEX_BIN does not point to an executable file".to_owned());
     }
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("codex");
-        if bundled.is_file() {
+        let bundled = resource_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        if codex_executable_usable(&bundled) {
             return Ok(bundled);
         }
     }
-    let mut candidates = vec![
+
+    let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let mut candidates = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .map(|directory| directory.join(executable_name))
+        .collect::<Vec<_>>();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            candidates.push(
+                PathBuf::from(app_data)
+                    .join("npm")
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex")
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex-win32-x64")
+                    .join("vendor")
+                    .join("x86_64-pc-windows-msvc")
+                    .join("bin")
+                    .join("codex.exe"),
+            );
+        }
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            candidates.push(
+                PathBuf::from(local_app_data)
+                    .join("Microsoft")
+                    .join("WindowsApps")
+                    .join("codex.exe"),
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    candidates.extend([
         PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
         PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
         PathBuf::from("/opt/homebrew/bin/codex"),
         PathBuf::from("/usr/local/bin/codex"),
-    ];
+    ]);
+
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(PathBuf::from(&home).join(".local/bin/codex"));
         candidates.push(PathBuf::from(home).join(".cargo/bin/codex"));
     }
     candidates
         .into_iter()
-        .find(|path| path.is_file())
+        .find(|path| codex_executable_usable(path))
         .ok_or_else(|| {
-            "未找到 Codex 可执行文件；请安装 Codex，或设置 JARVIS_CODEX_BIN。".to_owned()
+            "未找到可访问的 Codex 可执行文件；请安装 Codex，设置 JARVIS_CODEX_BIN，或在 Jarvis 设置中选择 codex.exe。".to_owned()
         })
+}
+
+fn codex_executable_usable(path: &std::path::Path) -> bool {
+    if !path.is_file() || fs::File::open(path).is_err() {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(target_os = "windows"))]
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_proxy(command: &mut Command) {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    let needs_http = std::env::var_os("HTTP_PROXY").is_none();
+    let needs_https = std::env::var_os("HTTPS_PROXY").is_none();
+    if !needs_http && !needs_https {
+        return;
+    }
+    let Ok(settings) = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings")
+    else {
+        return;
+    };
+    let enabled = settings.get_value::<u32, _>("ProxyEnable").unwrap_or(0);
+    let Ok(raw) = settings.get_value::<String, _>("ProxyServer") else {
+        return;
+    };
+    if enabled == 0 || raw.trim().is_empty() {
+        return;
+    }
+
+    let mut http = None;
+    let mut https = None;
+    if raw.contains('=') {
+        for entry in raw.split(';') {
+            if let Some((scheme, address)) = entry.split_once('=') {
+                match scheme.trim().to_ascii_lowercase().as_str() {
+                    "http" => http = windows_proxy_url(address),
+                    "https" => https = windows_proxy_url(address),
+                    _ => {}
+                }
+            }
+        }
+    } else {
+        http = windows_proxy_url(&raw);
+        https = http.clone();
+    }
+    if needs_http {
+        if let Some(value) = http.as_ref().or(https.as_ref()) {
+            command.env("HTTP_PROXY", value);
+        }
+    }
+    if needs_https {
+        if let Some(value) = https.as_ref().or(http.as_ref()) {
+            command.env("HTTPS_PROXY", value);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_proxy_url(address: &str) -> Option<String> {
+    let address = address.trim();
+    if address.is_empty() {
+        None
+    } else if address.contains("://") {
+        Some(address.to_owned())
+    } else {
+        Some(format!("http://{address}"))
+    }
 }
 
 async fn runtime(state: &State<'_, AppState>) -> Result<Arc<CodexRuntime>, String> {
@@ -411,7 +570,13 @@ async fn direct_voice_status(state: State<'_, AppState>) -> Result<DirectVoiceIn
 }
 
 fn wake_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
     let relative = PathBuf::from("wake-helper/JarvisWakeListener.app");
+    #[cfg(target_os = "windows")]
+    let relative = PathBuf::from("wake-helper/JarvisWakeListener.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err("Wake recognition is currently supported on macOS and Windows".to_owned());
+
     if let Ok(resource_dir) = app.path().resource_dir() {
         let bundled = resource_dir.join(&relative);
         if bundled.exists() {
@@ -425,6 +590,7 @@ fn wake_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("Jarvis 唤醒监听器未找到".to_owned())
 }
 
+#[cfg(target_os = "macos")]
 fn host_app_bundle_path(app: &AppHandle) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir().ok()?;
     let contents_dir = resource_dir.parent()?;
@@ -460,12 +626,15 @@ fn start_wake_supervisor(app: AppHandle) {
                 return;
             }
         };
-        // A previous host may have exited while its LaunchServices helper
-        // remained alive. Keep exactly one microphone listener.
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-x", "JarvisWakeListener"])
-            .status()
-            .await;
+        #[cfg(target_os = "macos")]
+        {
+            // A previous host may have exited while its LaunchServices helper
+            // remained alive. Keep exactly one microphone listener.
+            let _ = Command::new("/usr/bin/pkill")
+                .args(["-x", "JarvisWakeListener"])
+                .status()
+                .await;
+        }
 
         let mut woke = false;
         while state.wake_enabled.load(Ordering::SeqCst) {
@@ -482,17 +651,28 @@ fn start_wake_supervisor(app: AppHandle) {
                 break;
             }
 
-            // LaunchServices is required so macOS attributes microphone and
-            // speech-recognition permissions to the helper app bundle.
-            let mut command = Command::new("/usr/bin/open");
-            command
-                .args(["-n", "-W"])
-                .arg(&helper)
-                .args(["--args", "--event-file"])
-                .arg(&event_file);
-            if let Some(host_app) = host_app_bundle_path(&app) {
-                command.arg("--host-app").arg(host_app);
-            }
+            #[cfg(target_os = "macos")]
+            let mut command = {
+                // LaunchServices is required so macOS attributes microphone and
+                // speech-recognition permissions to the helper app bundle.
+                let mut command = Command::new("/usr/bin/open");
+                command
+                    .args(["-n", "-W"])
+                    .arg(&helper)
+                    .args(["--args", "--event-file"])
+                    .arg(&event_file);
+                if let Some(host_app) = host_app_bundle_path(&app) {
+                    command.arg("--host-app").arg(host_app);
+                }
+                command
+            };
+
+            #[cfg(target_os = "windows")]
+            let mut command = {
+                let mut command = Command::new(&helper);
+                command.arg("--event-file").arg(&event_file);
+                command
+            };
             let mut child = match command
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -548,6 +728,8 @@ fn start_wake_supervisor(app: AppHandle) {
                                 .and_then(Value::as_str)
                                 .unwrap_or("wake listener error")
                                 .to_owned();
+                            state.wake_enabled.store(false, Ordering::SeqCst);
+                            state.wake_ready.store(false, Ordering::SeqCst);
                         }
                         _ => {}
                     }
@@ -567,10 +749,19 @@ fn start_wake_supervisor(app: AppHandle) {
             }
 
             if woke || !state.wake_enabled.load(Ordering::SeqCst) {
-                let _ = Command::new("/usr/bin/pkill")
-                    .args(["-x", "JarvisWakeListener"])
-                    .status()
-                    .await;
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = Command::new("/usr/bin/pkill")
+                        .args(["-x", "JarvisWakeListener"])
+                        .status()
+                        .await;
+                }
+                #[cfg(target_os = "windows")]
+                if child.try_wait().ok().flatten().is_none() {
+                    // Only terminate the exact helper process owned by this
+                    // supervisor. Never kill by image name on Windows.
+                    let _ = child.kill().await;
+                }
             }
             let _ = child.wait().await;
             let _ = fs::remove_file(&event_file);
@@ -605,20 +796,26 @@ async fn disarm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
     let state = app.state::<AppState>();
     state.wake_enabled.store(false, Ordering::SeqCst);
     state.wake_ready.store(false, Ordering::SeqCst);
-    let pid = state.wake_pid.swap(0, Ordering::SeqCst);
-    if pid > 0 {
-        let _ = Command::new("/bin/kill")
-            .arg(pid.to_string())
-            .status()
-            .await;
+    #[cfg(target_os = "macos")]
+    {
+        let pid = state.wake_pid.swap(0, Ordering::SeqCst);
+        if pid > 0 {
+            let _ = Command::new("/bin/kill")
+                .arg(pid.to_string())
+                .status()
+                .await;
+        }
     }
     // The supervisor starts asynchronously and can cross this command in
     // flight. Keep terminating until it has observed wake_enabled=false.
     for _ in 0..15 {
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-x", "JarvisWakeListener"])
-            .status()
-            .await;
+        #[cfg(target_os = "macos")]
+        {
+            let _ = Command::new("/usr/bin/pkill")
+                .args(["-x", "JarvisWakeListener"])
+                .status()
+                .await;
+        }
         if !state.wake_supervisor_running.load(Ordering::SeqCst) {
             break;
         }
@@ -644,18 +841,24 @@ async fn consume_cold_wake(app: AppHandle, state: State<'_, AppState>) -> Result
     // warm wake, but only after the newly spawned listener fully releases mic.
     state.wake_enabled.store(false, Ordering::SeqCst);
     state.wake_ready.store(false, Ordering::SeqCst);
-    let pid = state.wake_pid.swap(0, Ordering::SeqCst);
-    if pid > 0 {
-        let _ = Command::new("/bin/kill")
-            .arg(pid.to_string())
-            .status()
-            .await;
+    #[cfg(target_os = "macos")]
+    {
+        let pid = state.wake_pid.swap(0, Ordering::SeqCst);
+        if pid > 0 {
+            let _ = Command::new("/bin/kill")
+                .arg(pid.to_string())
+                .status()
+                .await;
+        }
     }
     for _ in 0..15 {
-        let _ = Command::new("/usr/bin/pkill")
-            .args(["-x", "JarvisWakeListener"])
-            .status()
-            .await;
+        #[cfg(target_os = "macos")]
+        {
+            let _ = Command::new("/usr/bin/pkill")
+                .args(["-x", "JarvisWakeListener"])
+                .status()
+                .await;
+        }
         if !state.wake_supervisor_running.load(Ordering::SeqCst) {
             break;
         }
@@ -678,10 +881,16 @@ fn default_workspace() -> Result<String, String> {
                 .map_err(|error| format!("无法读取 JARVIS_WORKSPACE：{error}"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(home);
-        if path.is_dir() {
-            return Ok(path.to_string_lossy().into_owned());
+    for variable in if cfg!(windows) {
+        ["USERPROFILE", "HOME"]
+    } else {
+        ["HOME", "USERPROFILE"]
+    } {
+        if let Ok(home) = std::env::var(variable) {
+            let path = PathBuf::from(home);
+            if path.is_dir() {
+                return Ok(path.to_string_lossy().into_owned());
+            }
         }
     }
     std::env::current_dir()
@@ -697,6 +906,11 @@ fn validated_workspace(cwd: &str) -> Result<String, String> {
     path.canonicalize()
         .map(|value| value.to_string_lossy().into_owned())
         .map_err(|error| format!("无法读取工作目录：{error}"))
+}
+
+#[tauri::command]
+fn validate_workspace(cwd: String) -> Result<String, String> {
+    validated_workspace(&cwd)
 }
 
 async fn terminate_runtime(state: &AppState) -> Result<(), String> {
@@ -718,17 +932,22 @@ async fn ensure_runtime(
     cwd: &str,
     resume_thread_id: Option<&str>,
     permission_mode: PermissionMode,
+    selected_codex_binary: Option<&str>,
 ) -> Result<Arc<CodexRuntime>, String> {
     let cwd = validated_workspace(cwd)?;
+    let codex_binary = codex_binary_path(&app, selected_codex_binary)?;
     let existing = { state.runtime.lock().await.clone() };
     if let Some(existing) = existing {
-        if existing.permission_mode == permission_mode && existing.workspace == cwd {
+        if existing.permission_mode == permission_mode
+            && existing.workspace == cwd
+            && existing.codex_binary == codex_binary
+        {
             return Ok(existing);
         }
         terminate_runtime(state).await?;
     }
     let profile = permission_mode.profile();
-    let runtime = CodexRuntime::spawn(app, permission_mode, cwd.clone()).await?;
+    let runtime = CodexRuntime::spawn(app, permission_mode, cwd.clone(), codex_binary).await?;
     runtime.request("initialize", json!({
         "clientInfo": {"name": "jarvis-codex", "title": "Jarvis Codex", "version": env!("CARGO_PKG_VERSION")},
         "capabilities": {"experimentalApi": true}
@@ -777,8 +996,17 @@ async fn start_jarvis(
     cwd: String,
     thread_id: Option<String>,
     permission_mode: PermissionMode,
+    codex_path: Option<String>,
 ) -> Result<SessionInfo, String> {
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
+    let runtime = ensure_runtime(
+        app,
+        &state,
+        &cwd,
+        thread_id.as_deref(),
+        permission_mode,
+        codex_path.as_deref(),
+    )
+    .await?;
     let thread_id = runtime.thread().await?;
     Ok(SessionInfo { thread_id, cwd })
 }
@@ -787,16 +1015,28 @@ async fn start_jarvis(
 async fn start_codex_voice(
     app: AppHandle,
     state: State<'_, AppState>,
-    cwd: String,
-    thread_id: Option<String>,
-    permission_mode: PermissionMode,
-    sdp: String,
-    voice: Option<String>,
+    request: StartCodexVoiceRequest,
 ) -> Result<DirectVoiceInfo, String> {
+    let StartCodexVoiceRequest {
+        cwd,
+        thread_id,
+        permission_mode,
+        codex_path,
+        sdp,
+        voice,
+    } = request;
     if !sdp.starts_with("v=0") {
         return Err("WebRTC SDP offer 无效".to_owned());
     }
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
+    let runtime = ensure_runtime(
+        app,
+        &state,
+        &cwd,
+        thread_id.as_deref(),
+        permission_mode,
+        codex_path.as_deref(),
+    )
+    .await?;
     let thread_id = runtime.thread().await?;
     if runtime.voice_active.load(Ordering::SeqCst) {
         let _ = runtime
@@ -956,6 +1196,17 @@ pub fn run() {
     let cold_wake_pending = arguments.iter().any(|argument| argument == "--jarvis-wake");
     let background_start = arguments.iter().any(|argument| argument == "--background");
     tauri::Builder::default()
+        // This must remain the first plugin. A second launch only raises the
+        // existing window instead of starting another Codex/Voice runtime.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            raise_jarvis_window(app);
+            if args.iter().any(|argument| argument == "--jarvis-wake") {
+                app.state::<AppState>()
+                    .cold_wake_pending
+                    .store(true, Ordering::SeqCst);
+                let _ = app.emit("jarvis-wake", json!({"ok": true, "cold": true}));
+            }
+        }))
         .manage(AppState {
             runtime: Mutex::new(None),
             cold_wake_pending: AtomicBool::new(cold_wake_pending),
@@ -973,6 +1224,7 @@ pub fn run() {
             wake_listener_status,
             consume_cold_wake,
             default_workspace,
+            validate_workspace,
             startup_is_background,
             request_microphone_permission,
             start_jarvis,
