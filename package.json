@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "wake:build": "zsh scripts/build-wake-helper.sh",
+    "wake:build": "node scripts/build-platform.mjs",
     "predev": "npm run wake:build",
     "dev": "tauri dev",
     "prebuild": "npm run wake:build",

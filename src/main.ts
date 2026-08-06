@@ -765,15 +765,20 @@ async function stopDirectVoice() {
   }
 }
 
+function wakeStatusLabel(status: WakeStatus) {
+  if (status.authorization === "manual") return "手动启动 Voice";
+  return status.ready
+    ? "Local listener ready"
+    : status.authorization === "authorized"
+      ? "Waiting to re-arm"
+      : status.authorization;
+}
+
 if (currentWindow) {
   await listen<Message>("codex-event", ({ payload }) => void handle(payload));
   await listen<WakeStatus>("jarvis-wake-status", ({ payload }) => {
     state.wake = payload;
-    $("#wake-auth").textContent = payload.ready
-      ? "Local listener ready"
-      : payload.authorization === "authorized"
-        ? "Waiting to re-arm"
-        : payload.authorization;
+    $("#wake-auth").textContent = wakeStatusLabel(payload);
     if (payload.ready) {
       if (recoverableColdStartError && state.mode === "degraded") {
         recoverableColdStartError = false;
@@ -988,7 +993,7 @@ if (currentWindow) {
 async function armWakeListener() {
   try {
     state.wake = await invoke<WakeStatus>("arm_wake_listener");
-    $("#wake-auth").textContent = state.wake.ready ? "Local listener ready" : state.wake.authorization;
+    $("#wake-auth").textContent = wakeStatusLabel(state.wake);
     if (["denied", "restricted"].includes(state.wake.authorization)) {
       setMode("degraded");
       banner.hidden = false;

@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": ["wake-helper/JarvisWakeListener.app/"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

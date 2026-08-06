@@ -3,22 +3,30 @@
 ## Runtime flow
 
 ```text
-JarvisWakeListener
-  └─ on-device SFSpeechRecognizer
-       └─ wake event
-            └─ Tauri/Rust host shows Jarvis window
-                 ├─ disarms wake listener and releases microphone
-                 ├─ native AVFoundation permission preflight
-                 └─ WKWebView creates WebRTC offer
-                      └─ Codex app-server V3 realtime conversation
-                           ├─ audio response
-                           ├─ transcript events
-                           └─ Codex turns, tools and approvals
+macOS:
+  JarvisWakeListener
+    └─ on-device SFSpeechRecognizer
+         └─ wake event
+              └─ Tauri/Rust host shows Jarvis window
+                   ├─ disarms wake listener and releases microphone
+                   ├─ native AVFoundation permission preflight
+                   └─ WKWebView creates WebRTC offer
+                        └─ Codex app-server V3 realtime conversation
+
+Windows:
+  Visible Jarvis window
+    └─ microphone button or text input
+         └─ WKWebView creates WebRTC offer
+              └─ Codex app-server V3 realtime conversation
+
+Both paths share audio response, transcript events, Codex turns, tools and approvals.
 ```
 
-The wake listener and Voice session never capture the microphone concurrently.
-The Rust host terminates the listener and waits for `AVAudioEngine` to release
-the input device before WebRTC starts.
+On macOS, the wake listener and Voice session never capture the microphone
+concurrently. The Rust host terminates the listener and waits for `AVAudioEngine`
+to release the input device before WebRTC starts. Windows has no resident wake
+listener in this release, so the renderer starts Voice directly after the user
+presses the microphone button.
 
 ## Thread lifecycle
 
@@ -35,6 +43,8 @@ input share this runtime.
 - Warm wake raises the existing window and starts Voice.
 - On macOS, wake explicitly activates `NSApplication`, briefly raises the
   window level, focuses Jarvis, and then restores the normal window level.
+- On Windows, the app starts with its window visible and reports
+  `authorization: "manual"` for the wake status command.
 - STOP interrupts active turns, ends Voice and rearms the listener.
 
 ## Trust boundaries

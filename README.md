@@ -62,9 +62,10 @@ Codex Voice 已经不只是把语音转成一条文字提示：它支持自然�
 热键，也不创建第二套 GPT-Live 会话。认证复用本机 Codex 登录；语音、文字、
 任务执行和工具事件属于同一个 Codex thread。
 
-> 当前状态：已在 macOS 26 Apple Silicon 实机验证唤醒、实时转写、语音回复和
-> Codex 任务执行。Codex realtime conversation 仍是实验性 app-server 能力，
-> 上游协议升级时可能需要同步适配。
+> 当前状态：macOS 26 Apple Silicon 已实机验证唤醒、实时转写、语音回复和
+> Codex 任务执行。Windows 版本复用同一套 Voice、文字任务和权限链路，安装后
+> 通过界面麦克风按钮启动 Voice；系统级热词监听仍是 macOS 专属能力。Codex
+> realtime conversation 仍是实验性 app-server 能力，上游协议升级时可能需要同步适配。
 
 ## 为什么是现在
 
@@ -139,7 +140,8 @@ Voice 回报结果。
 
 ## 功能
 
-- 本机唤醒词：嗨/嘿 Jarvis、Hi/Hey Jarvis、嗨/嘿贾维斯
+- macOS 本机唤醒词：嗨/嘿 Jarvis、Hi/Hey Jarvis、嗨/嘿贾维斯
+- Windows 手动 Voice 启动：点击界面麦克风按钮
 - Tauri 2 + Rust + TypeScript 全息桌面 GUI
 - 透明无边框头像界面与粒子/装甲聚合唤醒动画
 - 头像悬停显示控制区，待机时自动隐藏外围按钮
@@ -154,15 +156,18 @@ Voice 回报结果。
 - 安全、自动办公和完全访问三档 Codex 权限，可在 Jarvis 设置中切换
 - 可随时“新开线程”：停止当前任务并创建新的 Codex thread，旧线程仍保留在 Codex 历史中
 - 自动办公默认限制在当前工作目录内，越界操作不弹窗并直接失败
-- 登录时后台启动，关闭窗口仅隐藏，继续监听唤醒词
-- 语音唤醒会激活 macOS 应用并把 Jarvis 窗口升到最前层
+- macOS 登录时后台启动，关闭窗口仅隐藏，继续监听唤醒词
+- Windows 正常显示窗口，不依赖后台热词进程
+- macOS 语音唤醒会激活应用并把 Jarvis 窗口升到最前层
 
 ## 系统要求
 
-- macOS 13 或更高版本
-- 当前 DMG 面向 Apple Silicon
+- macOS 13 或更高版本；当前 DMG 面向 Apple Silicon
+- Windows 10/11 x64，安装器为 NSIS `.exe`
 - 已安装并登录 Codex App、ChatGPT App 或 Codex CLI
-- 麦克风和语音识别权限
+- 麦克风权限；macOS 还需要语音识别权限
+
+Linux 还没有纳入当前安装包发布范围。
 
 普通安装用户不需要 Node.js 或 Rust。它们只用于源码开发和构建。
 
@@ -194,8 +199,10 @@ npm run build
 
 - `src-tauri/target/release/bundle/macos/Jarvis Codex.app`
 - `src-tauri/target/release/bundle/dmg/Jarvis Codex_0.2.0_aarch64.dmg`
+- Windows：`src-tauri/target/release/bundle/nsis/Jarvis Codex_0.2.0_x64-setup.exe`
 
-构建脚本会生成并签名 `JarvisWakeListener.app`。该产物不进入 Git。
+macOS 构建脚本会生成并签名 `JarvisWakeListener.app`。Windows 构建会跳过
+Swift/AVFoundation helper，使用手动 Voice 启动。helper 和构建中间产物不进入 Git。
 
 ## 生产发布
 
@@ -218,8 +225,8 @@ npm run build
 
 ## 隐私与安全
 
-- 唤醒词强制使用 `requiresOnDeviceRecognition` 在本机识别。
-- 只有唤醒后，麦克风音频才进入 Codex Voice WebRTC 会话。
+- macOS 唤醒词强制使用 `requiresOnDeviceRecognition` 在本机识别。
+- macOS 只有唤醒后，麦克风音频才进入 Codex Voice WebRTC 会话；Windows 不启动常驻热词监听。
 - 不保存原始音频，不读取或写入登录凭据。
 - WebView 使用限制性 CSP，不加载第三方字体或脚本。
 - 默认使用“自动办公”：`workspace-write` sandbox 和 `never` approval；

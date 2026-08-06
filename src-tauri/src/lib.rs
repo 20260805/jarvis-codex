@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(target_os = "macos")]
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU32;
 use std::{
     collections::HashMap,
-    fs,
     path::PathBuf,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -24,7 +27,9 @@ struct AppState {
     background_start: bool,
     wake_enabled: AtomicBool,
     wake_ready: AtomicBool,
+    #[cfg(target_os = "macos")]
     wake_supervisor_running: AtomicBool,
+    #[cfg(target_os = "macos")]
     wake_pid: AtomicU32,
     wake_authorization: RwLock<String>,
 }
@@ -353,21 +358,44 @@ fn codex_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
             return Ok(bundled);
         }
     }
-    let mut candidates = vec![
-        PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
-        PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-    ];
+    let mut candidates = if cfg!(target_os = "windows") {
+        vec![
+            PathBuf::from(r"C:\Program Files\Codex\codex.exe"),
+            PathBuf::from(r"C:\Program Files\ChatGPT\codex.exe"),
+        ]
+    } else {
+        vec![
+            PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
+            PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
+            PathBuf::from("/opt/homebrew/bin/codex"),
+            PathBuf::from("/usr/local/bin/codex"),
+        ]
+    };
+    if let Some(path) = std::env::var_os("PATH") {
+        let names: &[&str] = if cfg!(target_os = "windows") {
+            &["codex.exe", "codex.cmd", "codex"]
+        } else {
+            &["codex"]
+        };
+        for directory in std::env::split_paths(&path) {
+            for name in names {
+                candidates.push(directory.join(name));
+            }
+        }
+    }
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(PathBuf::from(&home).join(".local/bin/codex"));
         candidates.push(PathBuf::from(home).join(".cargo/bin/codex"));
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(&profile).join(".cargo/bin/codex.exe"));
+        candidates.push(PathBuf::from(&profile).join("AppData/Roaming/npm/codex.cmd"));
     }
     candidates
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| {
-            "未找到 Codex 可执行文件；请安装 Codex，或设置 JARVIS_CODEX_BIN。".to_owned()
+            "未找到 Codex 可执行文件；请安装 Codex，或设置 JARVIS_CODEX_BIN（Windows 可设置为 codex.exe 或 codex.cmd）。".to_owned()
         })
 }
 
@@ -410,6 +438,7 @@ async fn direct_voice_status(state: State<'_, AppState>) -> Result<DirectVoiceIn
     Ok(direct_voice_info(&state).await)
 }
 
+#[cfg(target_os = "macos")]
 fn wake_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
     let relative = PathBuf::from("wake-helper/JarvisWakeListener.app");
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -425,6 +454,7 @@ fn wake_helper_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("Jarvis 唤醒监听器未找到".to_owned())
 }
 
+#[cfg(target_os = "macos")]
 fn host_app_bundle_path(app: &AppHandle) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir().ok()?;
     let contents_dir = resource_dir.parent()?;
@@ -441,6 +471,7 @@ async fn wake_status_value(state: &AppState) -> WakeStatus {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn start_wake_supervisor(app: AppHandle) {
     let state = app.state::<AppState>();
     if state.wake_supervisor_running.swap(true, Ordering::SeqCst) {
@@ -593,6 +624,7 @@ fn start_wake_supervisor(app: AppHandle) {
     });
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn arm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
     start_wake_supervisor(app.clone());
@@ -600,6 +632,7 @@ async fn arm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
     Ok(wake_status_value(&app.state::<AppState>()).await)
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn disarm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
     let state = app.state::<AppState>();
@@ -630,11 +663,34 @@ async fn disarm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
     Ok(wake_status_value(&state).await)
 }
 
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn arm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
+    let state = app.state::<AppState>();
+    state.wake_enabled.store(false, Ordering::SeqCst);
+    state.wake_ready.store(false, Ordering::SeqCst);
+    *state.wake_authorization.write().await = "manual".to_owned();
+    let status = wake_status_value(&state).await;
+    let _ = app.emit("jarvis-wake-status", status.clone());
+    Ok(status)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn disarm_wake_listener(app: AppHandle) -> Result<WakeStatus, String> {
+    let state = app.state::<AppState>();
+    state.wake_enabled.store(false, Ordering::SeqCst);
+    state.wake_ready.store(false, Ordering::SeqCst);
+    *state.wake_authorization.write().await = "manual".to_owned();
+    Ok(wake_status_value(&state).await)
+}
+
 #[tauri::command]
 async fn wake_listener_status(app: AppHandle) -> WakeStatus {
     wake_status_value(&app.state::<AppState>()).await
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 async fn consume_cold_wake(app: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     if !state.cold_wake_pending.swap(false, Ordering::SeqCst) {
@@ -667,6 +723,12 @@ async fn consume_cold_wake(app: AppHandle, state: State<'_, AppState>) -> Result
     Ok(true)
 }
 
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn consume_cold_wake(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.cold_wake_pending.swap(false, Ordering::SeqCst))
+}
+
 #[tauri::command]
 fn default_workspace() -> Result<String, String> {
     if let Ok(configured) = std::env::var("JARVIS_WORKSPACE") {
@@ -678,10 +740,12 @@ fn default_workspace() -> Result<String, String> {
                 .map_err(|error| format!("无法读取 JARVIS_WORKSPACE：{error}"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let path = PathBuf::from(home);
-        if path.is_dir() {
-            return Ok(path.to_string_lossy().into_owned());
+    for variable in ["HOME", "USERPROFILE"] {
+        if let Ok(home) = std::env::var(variable) {
+            let path = PathBuf::from(home);
+            if path.is_dir() {
+                return Ok(path.to_string_lossy().into_owned());
+            }
         }
     }
     std::env::current_dir()
@@ -954,7 +1018,8 @@ async fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
 pub fn run() {
     let arguments: Vec<String> = std::env::args().collect();
     let cold_wake_pending = arguments.iter().any(|argument| argument == "--jarvis-wake");
-    let background_start = arguments.iter().any(|argument| argument == "--background");
+    let background_start =
+        cfg!(target_os = "macos") && arguments.iter().any(|argument| argument == "--background");
     tauri::Builder::default()
         .manage(AppState {
             runtime: Mutex::new(None),
@@ -962,7 +1027,9 @@ pub fn run() {
             background_start,
             wake_enabled: AtomicBool::new(false),
             wake_ready: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
             wake_supervisor_running: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
             wake_pid: AtomicU32::new(0),
             wake_authorization: RwLock::new("notDetermined".to_owned()),
         })
@@ -985,12 +1052,15 @@ pub fn run() {
             shutdown
         ])
         .setup(move |app| {
-            use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-            app.handle().plugin(tauri_plugin_autostart::init(
-                MacosLauncher::LaunchAgent,
-                Some(vec!["--background"]),
-            ))?;
-            let _ = app.autolaunch().enable();
+            #[cfg(target_os = "macos")]
+            {
+                use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+                app.handle().plugin(tauri_plugin_autostart::init(
+                    MacosLauncher::LaunchAgent,
+                    Some(vec!["--background"]),
+                ))?;
+                let _ = app.autolaunch().enable();
+            }
             if let Some(window) = app.get_webview_window("main") {
                 if background_start {
                     let _ = window.hide();
@@ -998,6 +1068,7 @@ pub fn run() {
                     raise_jarvis_window(app.handle());
                 }
             }
+            #[cfg(target_os = "macos")]
             if background_start {
                 start_wake_supervisor(app.handle().clone());
             }
