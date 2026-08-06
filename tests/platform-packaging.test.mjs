@@ -15,6 +15,10 @@ test("build hook is runnable on Windows", () => {
   assert.ok(existsSync(new URL("scripts/build-platform.mjs", root)));
 });
 
+test("test discovery does not depend on shell glob expansion", () => {
+  assert.equal(packageJson.scripts.test, "node --test");
+});
+
 test("common bundle config is platform-neutral", () => {
   assert.equal(baseConfig.bundle.targets, "all");
   assert.equal("resources" in baseConfig.bundle, false);
